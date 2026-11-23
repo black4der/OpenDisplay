@@ -28,6 +28,14 @@
 	<!-- Clock Mode (Issue 30): optional one-shot location lookup to auto-fill the sunrise/sunset
 	     latitude & longitude. Only requested when the user taps "Use current location"; a manual
 	     entry is always available instead. -->
+	<!-- White-point calibration (d65): the Mac listens for the iPhone probe app on the local network
+	     and advertises itself over Bonjour, only while a calibration window is open. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>OpenDisplay finds the D65 Probe app on your iPhone over the local network to measure a display's white point during calibration.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_d65._tcp</string>
+	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>OpenDisplay uses your location once to calculate local sunrise, noon, and sunset times for Clock Mode brightness schedules. You can also enter your coordinates manually.</string>
 	<!-- Sparkle 2 in-app updates. The feed is the newest release's appcast.xml asset, reached through

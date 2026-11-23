@@ -24,6 +24,8 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
     /// panel dark with nothing to restore it; cleared once the last external leaves or the setting
     /// is turned off.
     public var ignoredBuiltIn: IgnoredBuiltInState?
+    /// Kept white-point calibrations, keyed by `DisplayRecordID.rawValue` (see `DisplayCalibration`).
+    public var displayCalibrations: [String: DisplayCalibration]
     /// Seconds the "Keep these display settings?" prompt waits before auto-reverting a
     /// resolution/mirror/set-main change (Issue 6). Floored at 3 by the app.
     public var arrangementAutoRevertSeconds: Int
@@ -156,6 +158,7 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         preventDisplaySleepWithExternal: Bool = false,
         ignoreBuiltInOnExternal: Bool = false,
         ignoredBuiltIn: IgnoredBuiltInState? = nil,
+        displayCalibrations: [String: DisplayCalibration] = [:],
         arrangementAutoRevertSeconds: Int = 10,
         hotkeyShortcuts: KeyboardShortcutRegistry = .defaults,
         displayNotificationsEnabled: Bool = false,
@@ -200,6 +203,7 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         self.preventDisplaySleepWithExternal = preventDisplaySleepWithExternal
         self.ignoreBuiltInOnExternal = ignoreBuiltInOnExternal
         self.ignoredBuiltIn = ignoredBuiltIn
+        self.displayCalibrations = displayCalibrations
         self.arrangementAutoRevertSeconds = arrangementAutoRevertSeconds
         self.hotkeyShortcuts = hotkeyShortcuts
         self.displayNotificationsEnabled = displayNotificationsEnabled
@@ -249,6 +253,7 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         case preventDisplaySleepWithExternal
         case ignoreBuiltInOnExternal = "autoDisconnectBuiltInOnExternal"
         case ignoredBuiltIn
+        case displayCalibrations
         case arrangementAutoRevertSeconds
         case hotkeyShortcuts
         case displayNotificationsEnabled
@@ -309,6 +314,8 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
             ?? defaults.ignoreBuiltInOnExternal
         ignoredBuiltIn = container.lenient(IgnoredBuiltInState.self, forKey: .ignoredBuiltIn)
             ?? defaults.ignoredBuiltIn
+        displayCalibrations = container.lenient([String: DisplayCalibration].self, forKey: .displayCalibrations)
+            ?? defaults.displayCalibrations
         arrangementAutoRevertSeconds = container.lenient(Int.self, forKey: .arrangementAutoRevertSeconds)
             ?? defaults.arrangementAutoRevertSeconds
         hotkeyShortcuts = container.lenient(KeyboardShortcutRegistry.self, forKey: .hotkeyShortcuts)

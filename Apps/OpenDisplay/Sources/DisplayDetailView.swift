@@ -33,6 +33,9 @@ struct DisplayDetailView: View {
                 ResolutionCard(display: display)
                 AppearanceCard(display: display)
                 if display.displayClass != .builtIn { ControlsCard(display: display) }
+                #if !PUBLIC_API_ONLY
+                if display.displayClass != .builtIn { WhitePointCard(display: display) }
+                #endif
                 DimmingCard(display: display)
                 UseAsCard(display: display)
                 IdentityCard(display: display)

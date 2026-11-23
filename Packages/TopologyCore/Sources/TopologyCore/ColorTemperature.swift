@@ -68,3 +68,33 @@ public enum ColorTemperatureCurve {
     }
 }
 
+
+/// A kept white-point calibration for one display, measured with an iPhone probe (d65): per-channel
+/// multipliers on the encoded gamma ramp, each 0...1 with the largest at 1, so highlights never clip.
+/// Applied through the same software-gamma composition as dimming and colour temperature.
+public struct DisplayCalibration: Hashable, Sendable, Codable {
+    public var red: Float
+    public var green: Float
+    public var blue: Float
+    /// White error before and after, in the metric the session scored with (ΔE00 by default).
+    public var deltaEBefore: Double?
+    public var deltaEAfter: Double?
+    public var calibratedAt: Date
+
+    public init(red: Float, green: Float, blue: Float, deltaEBefore: Double? = nil,
+                deltaEAfter: Double? = nil, calibratedAt: Date) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.deltaEBefore = deltaEBefore
+        self.deltaEAfter = deltaEAfter
+        self.calibratedAt = calibratedAt
+    }
+
+    /// From linear-light gains (what the solver produces) to encoded-ramp multipliers: a display
+    /// applies its own transfer function on top of the ramp, so a linear gain g becomes g^(1/γ).
+    public static func encoded(linear: Double, gamma: Double) -> Float {
+        let gain = min(max(linear, 0), 1)
+        return Float(gamma > 0 ? pow(gain, 1 / gamma) : gain)
+    }
+}

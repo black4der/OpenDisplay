@@ -370,6 +370,11 @@ final class SettingsStoreTests: XCTestCase {
         try store.save(OpenDisplaySettings(ignoreBuiltInOnExternal: true, ignoredBuiltIn: ledger))
         XCTAssertTrue(store.load().ignoreBuiltInOnExternal)
         XCTAssertEqual(store.load().ignoredBuiltIn, ledger)
+        // Kept calibrations round-trip too.
+        let calibration = DisplayCalibration(red: 0.98, green: 0.95, blue: 1, deltaEBefore: 4.2,
+                                             deltaEAfter: 1.7, calibratedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        try store.save(OpenDisplaySettings(displayCalibrations: ["cg:abc": calibration]))
+        XCTAssertEqual(store.load().displayCalibrations["cg:abc"], calibration)
         // Missing key in an older file defaults off.
         try Data(#"{"persistencePolicy":"reconnectOnQuit"}"#.utf8)
             .write(to: directory.appendingPathComponent("settings.json"))

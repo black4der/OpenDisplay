@@ -46,4 +46,12 @@ final class ColorTemperatureTests: XCTestCase {
         XCTAssertEqual(ColorTemperatureCurve.gains(kelvin: 20000),
                        ColorTemperatureCurve.gains(kelvin: ColorTemperatureCurve.maxKelvin))
     }
+
+    func testCalibrationGainsAreEncodedThroughTheDisplayGamma() {
+        XCTAssertEqual(DisplayCalibration.encoded(linear: 1, gamma: 2.2), 1)
+        // Halving linear light needs 0.5^(1/2.2) ≈ 0.73 on the encoded ramp, not 0.5.
+        XCTAssertEqual(DisplayCalibration.encoded(linear: 0.5, gamma: 2.2), 0.7297, accuracy: 0.0001)
+        XCTAssertEqual(DisplayCalibration.encoded(linear: 1.4, gamma: 2.2), 1)   // clamped: never boost
+        XCTAssertEqual(DisplayCalibration.encoded(linear: 0.9, gamma: 0), 0.9)   // no gamma: as-is
+    }
 }

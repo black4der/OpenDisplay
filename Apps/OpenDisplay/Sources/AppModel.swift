@@ -401,6 +401,7 @@ final class AppModel: ObservableObject {
             await enforceActiveSurfaceInvariant()  // recover if we launched into a stranded (0-active) state
             await reassertManagedOfflineIntent()  // a stamped owed-"off" survives a relaunch; pay it if covered
             reconcileDisplaySleepGuard()  // hold/release the keep-awake assertion for the launch topology
+            reassertSoftwareGamma()  // kept white-point calibrations live in the gamma slot
             #if !PUBLIC_API_ONLY
             reconcileAdaptiveLoop()  // start auto-brightness / Clock / Location Mode if enabled
             await restoreOwedAppPresetState()  // crash-safe: relaunch mid-app-preset restores the baseline
@@ -708,16 +709,83 @@ final class AppModel: ObservableObject {
     /// Direct `setGammaDim` calls would silently clear an active warmth — only Black Out (which
     /// wants the neutral floor) bypasses this.
     private func writeGamma(level: Float, id: DisplayRecordID, cgID: CGDirectDisplayID) {
-        let gains = ColorTemperatureCurve.gains(
+        // A white-point session sees the bare panel plus its own gains: no dim, warmth or boost may
+        // tint what the probe measures, or the solved gains would bake that tint in.
+        let calibrating = calibrationSessionGains[id] != nil
+        let warmth = calibrating ? .neutral : ColorTemperatureCurve.gains(
             kelvin: colorTemperature[id] ?? ColorTemperatureCurve.neutralKelvin)
+        let calibration = calibrationGains(for: id)
         // Headroom is only read while a boost is set — a plain dim/warmth write skips the
         // NSScreen lookup and takes the provider's untouched formula path (boost 1).
-        let fraction = xdrBoostFraction[id] ?? 0
+        let fraction = calibrating ? 0 : (xdrBoostFraction[id] ?? 0)
         let boost = fraction > 0
             ? XDRBrightnessPolicy.boost(forFraction: fraction, headroom: xdrHeadroom(cgID: cgID))
             : 1
         observer.setGammaAdjustment(
-            dim: level, red: gains.red, green: gains.green, blue: gains.blue, boost: boost, for: cgID)
+            dim: calibrating ? 1 : level, red: warmth.red * calibration.red,
+            green: warmth.green * calibration.green, blue: warmth.blue * calibration.blue,
+            boost: boost, for: cgID)
+    }
+
+    // MARK: - White-point calibration (d65 iPhone probe)
+
+    /// Session-only gains while a calibration session owns a display: neutral while it measures the
+    /// bare panel, the candidate gains while it verifies or previews. Absent = the kept calibration.
+    private var calibrationSessionGains: [DisplayRecordID: ColorTemperatureCurve.Gains] = [:]
+
+    /// The calibration multipliers in effect on a display: the session's, else the kept one, else none.
+    private func calibrationGains(for id: DisplayRecordID) -> ColorTemperatureCurve.Gains {
+        if let session = calibrationSessionGains[id] { return session }
+        guard let kept = settings.displayCalibrations[id.rawValue] else { return .neutral }
+        return ColorTemperatureCurve.Gains(red: kept.red, green: kept.green, blue: kept.blue)
+    }
+
+    /// The kept calibration for a display, if any.
+    func calibration(for observation: DisplayObservation) -> DisplayCalibration? {
+        settings.displayCalibrations[observation.recordID.rawValue]
+    }
+
+    /// Hands a display to a calibration session: the bare panel — no dim, overlay, warmth, boost or
+    /// kept calibration — and auto-brightness leaves it alone until `endCalibrationSession`.
+    func beginCalibrationSession(displayID: CGDirectDisplayID) -> Bool {
+        guard let observation = displays.first(where: { $0.cgDisplayID == displayID }) else { return false }
+        calibrationSessionGains[observation.recordID] = .neutral
+        let split = DimmingComposer.split(method: settings.dimmingMethod, level: softwareDim[observation.recordID] ?? 1)
+        writeGamma(level: split.gammaLevel, id: observation.recordID, cgID: displayID)
+        dimOverlay.setAlpha(0, for: displayID)
+        return true
+    }
+
+    /// Shows candidate (or neutral) gains on a display a session owns.
+    func setCalibrationSessionGains(_ gains: ColorTemperatureCurve.Gains, displayID: CGDirectDisplayID) {
+        guard let observation = displays.first(where: { $0.cgDisplayID == displayID }),
+              calibrationSessionGains[observation.recordID] != nil else { return }
+        calibrationSessionGains[observation.recordID] = gains
+        writeGamma(level: 1, id: observation.recordID, cgID: displayID)
+    }
+
+    /// Gives the display back: its kept calibration (if any), dim, overlay, warmth and boost.
+    func endCalibrationSession(displayID: CGDirectDisplayID) {
+        guard let observation = displays.first(where: { $0.cgDisplayID == displayID }),
+              calibrationSessionGains.removeValue(forKey: observation.recordID) != nil,
+              !blackedOut.contains(observation.recordID) else { return }
+        applyDim(level: softwareDim[observation.recordID] ?? 1, id: observation.recordID, cgID: displayID)
+    }
+
+    /// Stores a calibration the user kept. Takes effect once the session ends (or right away when none runs).
+    func keepCalibration(_ calibration: DisplayCalibration, displayID: CGDirectDisplayID) {
+        guard let observation = displays.first(where: { $0.cgDisplayID == displayID }) else { return }
+        settings.displayCalibrations[observation.recordID.rawValue] = calibration
+        persistSettings()
+    }
+
+    /// Drops a display's kept calibration and re-expresses its gamma without it.
+    func removeCalibration(for observation: DisplayObservation) {
+        guard let cgID = observation.cgDisplayID,
+              settings.displayCalibrations.removeValue(forKey: observation.recordID.rawValue) != nil else { return }
+        persistSettings()
+        guard !blackedOut.contains(observation.recordID) else { return }
+        applyDim(level: softwareDim[observation.recordID] ?? 1, id: observation.recordID, cgID: cgID)
     }
 
     /// Switches the dimming method and re-expresses every live dim through it, so the slider
@@ -2055,13 +2123,15 @@ final class AppModel: ObservableObject {
         reapplySoftwareDim(for: observation)
     }
 
-    /// Re-expresses software gamma (dim + colour temperature) on every active display that has any,
+    /// Re-expresses software gamma (dim + colour temperature + calibration) on every active display that has any,
     /// after macOS has reset the transfer tables. Skips Black Out, which holds gamma 0 on purpose.
     private func reassertSoftwareGamma() {
         for observation in displays where observation.isActive {
             let id = observation.recordID
             guard let cgID = observation.cgDisplayID, !blackedOut.contains(id),
-                  colorTemperature[id] != nil || (softwareDim[id] ?? 1) < 1 else { continue }
+                  colorTemperature[id] != nil || (softwareDim[id] ?? 1) < 1
+                    || calibrationSessionGains[id] != nil || settings.displayCalibrations[id.rawValue] != nil
+            else { continue }
             let split = DimmingComposer.split(method: settings.dimmingMethod, level: softwareDim[id] ?? 1)
             writeGamma(level: split.gammaLevel, id: id, cgID: cgID)
         }
@@ -2269,6 +2339,8 @@ final class AppModel: ObservableObject {
             // An active app preset is the last writer on this display (Issue #33 precedence) — leave it
             // alone so adaptive/clock never fights the preset it just applied.
             if appPresetActiveDisplays.contains(id) { continue }
+            // A white-point session is measuring this panel: a brightness change would skew it.
+            if calibrationSessionGains[id] != nil { continue }
             // A grouped display's brightness is driven by its group (Issue #39) — the two features
             // are mutually exclusive per display, so adaptive leaves it alone here.
             if DisplayGroupStore.isGroupGoverned(id, in: settings.displayGroups) { continue }
