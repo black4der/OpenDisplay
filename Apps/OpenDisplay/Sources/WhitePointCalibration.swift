@@ -87,7 +87,7 @@ private struct MainActorCallback: @unchecked Sendable {
     private var onData: ((Data) -> Void)?
     private var onClose: (() -> Void)?
     /// When set, each probe reading is rewritten before CalibrationService sees it — how a session
-    /// steers d65 (which always aims at D65) toward the MacBook reference instead.
+    /// swaps the phone firmware's XYZ for its MacBook-corrected raw channels.
     var sampleTransform: ((MeasurementSample) -> MeasurementSample)?
     private var inbound = Data()
 
@@ -217,8 +217,8 @@ private struct MainActorCallback: @unchecked Sendable {
 // MARK: - Session
 
 /// One session, reduced from d65's `SessionEvent`s: Prepare → Connect → Place → Measure → Review.
-/// It either calibrates an external display, or measures the MacBook's built-in white as the
-/// reference those calibrations can match. The display stays owned by the session (bare panel,
+/// It either calibrates an external display, or characterizes the iPhone on the MacBook's built-in
+/// screen — patches of known colour — so later calibrations can correct its readings. The display stays owned by the session (bare panel,
 /// auto-brightness paused) until `close()`, so Review can preview the result before Keep or Discard.
 @MainActor final class WhitePointSession: ObservableObject {
     enum Step: Int, CaseIterable { case prepare, connect, place, measure, review }
@@ -232,10 +232,14 @@ private struct MainActorCallback: @unchecked Sendable {
     @Published private(set) var verifyingPass: Int?
     @Published private(set) var record: ExperimentRecord?
     @Published private(set) var canKeep = false
-    /// The reference white this session measured (measureReference only).
-    @Published private(set) var measuredReference: Chromaticity?
-    /// Steer to the MacBook reference instead of absolute D65 (calibrate only; needs a reference).
-    @Published var matchReference: Bool
+    /// The correction this session fitted (measureReference only).
+    @Published private(set) var fitted: ProbeCharacterization?
+    /// The phone firmware's own reading of the MacBook white, shown beside the correction.
+    @Published private(set) var firmwareWhite: Chromaticity?
+    /// Correct readings with the saved characterization (calibrate only; needs one).
+    @Published var correctProbe: Bool
+    /// A reading arrived without raw channels while correcting: the probe isn't the updated one.
+    @Published private(set) var rawChannelsMissing = false
     /// Hold to see the panel without the candidate correction.
     @Published var showOriginal = false { didSet { preview() } }
 
@@ -244,7 +248,7 @@ private struct MainActorCallback: @unchecked Sendable {
     let displayName: String
     private let model: AppModel
     private var service: CalibrationService?
-    private var adaptation: ChromaticAdaptation.Matrix?
+    private var correction: ProbeCharacterization?
     private var autoStartArmed = true
     private var closed = false
 
@@ -253,18 +257,18 @@ private struct MainActorCallback: @unchecked Sendable {
         self.displayID = displayID
         self.displayName = displayName
         self.model = model
-        matchReference = purpose == .calibrate && model.calibrationReference != nil
+        correctProbe = purpose == .calibrate && model.probeCharacterization != nil
     }
 
     var patchCount: Int { CalibrationPatch.sequence.count }
-    var reference: CalibrationReference? { model.calibrationReference }
+    var characterization: ProbeCharacterization? { model.probeCharacterization }
 
     func start() {
         notice = nil
         if service == nil {
             do {
                 let listener = try ProbeNetworkListener()
-                adaptation = referenceAdaptation()
+                correction = purpose == .calibrate && correctProbe ? characterization : nil
                 listener.sampleTransform = { [weak self] sample in self?.adapt(sample) ?? sample }
                 let platform = HostPlatform(
                     makeOverlay: { id in
@@ -294,7 +298,9 @@ private struct MainActorCallback: @unchecked Sendable {
         verifyingPass = nil
         record = nil
         canKeep = false
-        measuredReference = nil
+        fitted = nil
+        firmwareWhite = nil
+        rawChannelsMissing = false
         step = .measure
         let mode: CalibrationMode = purpose == .measureReference ? .measureOnly : .calibrate
         service.run(configuration: CalibrationConfiguration(mode: mode), displayID: displayID)
@@ -303,7 +309,8 @@ private struct MainActorCallback: @unchecked Sendable {
     func retry() {
         record = nil
         canKeep = false
-        measuredReference = nil
+        fitted = nil
+        firmwareWhite = nil
         showOriginal = false
         model.setCalibrationSessionGains(.neutral, displayID: displayID)
         if probe != nil { enterPlacement() } else { step = .connect }
@@ -312,10 +319,7 @@ private struct MainActorCallback: @unchecked Sendable {
     func keep() {
         switch purpose {
         case .measureReference:
-            if let white = measuredReference, let probe {
-                model.saveCalibrationReference(CalibrationReference(
-                    x: white.x, y: white.y, probeModel: probe.model, measuredAt: Date()))
-            }
+            if canKeep, let fitted { model.saveProbeCharacterization(fitted) }
         case .calibrate:
             if let record, let gains = record.bestGains {
                 model.keepCalibration(DisplayCalibration(
@@ -323,7 +327,7 @@ private struct MainActorCallback: @unchecked Sendable {
                     green: DisplayCalibration.encoded(linear: gains.g, gamma: record.gamma),
                     blue: DisplayCalibration.encoded(linear: gains.b, gamma: record.gamma),
                     deltaEBefore: record.baselineDeltaE, deltaEAfter: record.bestDeltaE,
-                    calibratedAt: Date(), matchedReference: adaptation != nil), displayID: displayID)
+                    calibratedAt: Date(), matchedReference: correction != nil), displayID: displayID)
             }
         }
         close()
@@ -343,21 +347,33 @@ private struct MainActorCallback: @unchecked Sendable {
         }
     }
 
-    /// The Bradford map from the reference white to the exact white d65's engine steers to, so its
-    /// "D65" lands on the MacBook white as this phone sees it. Nil when not matching a reference.
-    private func referenceAdaptation() -> ChromaticAdaptation.Matrix? {
-        guard purpose == .calibrate, matchReference, let reference else { return nil }
-        let target = (try? CalibrationConfiguration(mode: .calibrate).whiteTarget()) ?? .d65
-        return ChromaticAdaptation.bradford(fromWhite: (reference.x, reference.y), toWhite: (target.x, target.y))
+    /// The reading's XYZ recomputed from its raw channels through the MacBook characterization.
+    private func adapt(_ sample: MeasurementSample) -> MeasurementSample {
+        guard let correction else { return sample }
+        guard let v = correction.xyz(raw: sample.channels) else { rawChannelsMissing = true; return sample }
+        var corrected = sample
+        // d65 drops readings with a negative component; only near-black ones come out a hair below 0.
+        corrected.xyz = XYZ(x: max(0, v.x), y: max(0, v.y), z: max(0, v.z))
+        corrected.reportedCCT = nil  // the sensor's own CCT describes the uncorrected reading
+        return corrected
     }
 
-    private func adapt(_ sample: MeasurementSample) -> MeasurementSample {
-        guard let adaptation else { return sample }
-        let v = ChromaticAdaptation.apply(adaptation, x: sample.xyz.x, y: sample.xyz.y, z: sample.xyz.z)
-        var adapted = sample
-        adapted.xyz = XYZ(x: v.x, y: v.y, z: v.z)
-        adapted.reportedCCT = nil  // the sensor's own CCT describes the raw reading, not the adapted one
-        return adapted
+    /// Fits this phone's raw channels to the colours the MacBook showed: d65's patches are drawn in
+    /// explicit sRGB, and the factory-calibrated, colour-managed panel shows them as specified.
+    /// Nil for a probe that sends no raw channels.
+    private func characterize(_ record: ExperimentRecord, whiteY: Double) -> ProbeCharacterization? {
+        func raw(_ phase: String) -> [Double]? {
+            let channels = record.measurements.last { $0.request.phase == phase }?.samples.map(\.channels)
+                .filter { $0.count >= 3 } ?? []
+            guard !channels.isEmpty else { return nil }
+            return (0..<3).map { i in channels.reduce(0) { $0 + $1[i] } / Double(channels.count) }
+        }
+        guard let probe, let black = raw("black") else { return nil }
+        let patches = CalibrationPatch.sequence.filter { $0.name != "black" }.compactMap { patch in
+            raw(patch.name).map { ProbeCharacterization.Patch(red: patch.red, green: patch.green, blue: patch.blue,
+                                                              raw: zip($0, black).map { $0 - $1 }) }
+        }
+        return ProbeCharacterization.characterize(patches, whiteY: whiteY, probeModel: probe.model, at: Date())
     }
 
     private func enterPlacement() {
@@ -376,7 +392,6 @@ private struct MainActorCallback: @unchecked Sendable {
         model.setCalibrationSessionGains(shown, displayID: displayID)
     }
 
-    /// The built-in's white, ambient subtracted: the white patch less the black one.
     /// d65 marks the whole run `.rejected` when the *next* pass would dim the display past its 20 % gate,
     /// even after a measured pass already improved the white within every gate. That pass stands.
     private static func bestPassStands(in record: ExperimentRecord) -> Bool {
@@ -386,12 +401,12 @@ private struct MainActorCallback: @unchecked Sendable {
         return best < before && best <= record.configuration.gate.maximumPostCorrectionDeltaE
     }
 
-    private static func white(in record: ExperimentRecord) -> Chromaticity? {
+    /// The firmware's white, ambient subtracted: the white patch less the black one.
+    private static func emittedWhite(in record: ExperimentRecord) -> XYZ? {
         guard let white = record.measurements.last(where: { $0.request.phase == "white" }) else { return nil }
         let ambient = record.measurements.last(where: { $0.request.phase == "black" })?.mean ?? .zero
         let emitted = white.subtracting(ambient)
-        guard emitted.y > 1 else { return nil }
-        return emitted.chromaticity
+        return emitted.y > 1 ? emitted : nil
     }
 
     private func handle(_ event: SessionEvent) {
@@ -403,8 +418,8 @@ private struct MainActorCallback: @unchecked Sendable {
         case .probeConnected(let identity):
             probe = identity
             notice = nil
-            if adaptation != nil, let reference, reference.probeModel != identity.model {
-                notice = String(localized: "The MacBook reference was measured with another iPhone (\(reference.probeModel)). Measure it again with this one for an accurate match.")
+            if let correction, correction.probeModel != identity.model {
+                notice = String(localized: "The saved characterization belongs to another iPhone (\(correction.probeModel)). Measure the MacBook with this one first.")
             }
             if step == .connect { enterPlacement() }
         case .probeDisconnected:
@@ -432,8 +447,11 @@ private struct MainActorCallback: @unchecked Sendable {
             self.record = record
             switch purpose {
             case .measureReference:
-                measuredReference = Self.white(in: record)
-                canKeep = measuredReference != nil
+                let white = Self.emittedWhite(in: record)
+                firmwareWhite = white?.chromaticity
+                fitted = white.flatMap { characterize(record, whiteY: $0.y) }
+                // |Δx|+|Δy| 0.01 is about ΔE00 4: past that the run was too noisy to trust.
+                canKeep = (fitted?.whiteCheckError ?? 1) <= 0.01
             case .calibrate:
                 canKeep = record.bestGains != nil
                     && (SessionSummary(record: record).canKeep || Self.bestPassStands(in: record))
@@ -618,7 +636,7 @@ struct WhitePointSessionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: ODSpacing.md) {
             if session.purpose == .measureReference {
-                Text("Measure the MacBook reference").font(.title3)
+                Text("Characterize the iPhone on the MacBook").font(.title3)
             } else {
                 Text("Calibrate white point · \(session.displayName)").font(.title3)
             }
@@ -653,7 +671,7 @@ struct WhitePointSessionView: View {
             }
         case .place:
             VStack(alignment: .leading, spacing: 8) {
-                Text("Press the iPhone face-down inside the outline on the display and hold it still.")
+                Text("Press the iPhone face-down on the bright patch, top edge up, and hold it still.")
                     .fixedSize(horizontal: false, vertical: true)
                 Text(placementText).foregroundStyle(.secondary)
                 ProgressView(value: min(max(session.placement.steadyFraction, 0), 1))
@@ -681,30 +699,30 @@ struct WhitePointSessionView: View {
                 Text("1. Open D65 Probe on your iPhone and keep it on the same Wi-Fi as this Mac.")
                 Text("2. Turn off True Tone and Night Shift for now. The MacBook screen lights up for the measurement and goes back to its brightness afterwards.")
                 Text("3. In System Settings › Displays, turn off “Automatically adjust brightness” for the built-in display while you measure — otherwise covering its light sensor changes the brightness and placement keeps starting over.")
-                Text("4. Tilt the MacBook screen back a little and press the iPhone face-down on it when the outline appears; hold it steady.")
-                Text("Measure with the same iPhone you will calibrate with; the match cancels that phone’s own sensor error.")
+                Text("4. Tilt the MacBook screen back a little and press the iPhone face-down on the bright patch when it appears; hold it steady.")
+                Text("The MacBook shows twelve patches of known colour; their readings teach OpenDisplay this iPhone’s sensor error. Calibrate with the same iPhone afterwards.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Toggle(isOn: $session.matchReference) {
+                Toggle(isOn: $session.correctProbe) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Match the MacBook screen")
-                        if let reference = session.reference {
-                            Text("Reference measured with \(reference.probeModel) on \(reference.measuredAt.formatted(.dateTime.month(.abbreviated).day())).")
+                        Text("Correct the iPhone with its MacBook characterization")
+                        if let characterization = session.characterization {
+                            Text("Characterized with \(characterization.probeModel) on \(characterization.measuredAt.formatted(.dateTime.month(.abbreviated).day())).")
                                 .font(.caption).foregroundStyle(.secondary)
                         } else {
-                            Text("Measure the MacBook reference first (in the White point card); otherwise this aims at absolute D65 as the iPhone sees it.")
+                            Text("Characterize the iPhone on the MacBook first (in the White point card); uncorrected, the iPhone reads whites far too blue.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
-                .disabled(session.reference == nil)
+                .disabled(session.characterization == nil)
                 Text("1. Open D65 Probe on your iPhone and keep it on the same Wi-Fi as this Mac.")
                 Text("2. Turn off True Tone and Night Shift for now, and keep the room light steady and not too bright.")
                 Text("3. Leave the monitor at the brightness and contrast you normally use — changing contrast later makes a calibration stale.")
                 Text("4. Let the monitor warm up for 20–30 minutes first, and turn off its own dynamic contrast, eco mode and auto-brightness.")
                 brightnessHint
             }
-            Text("The display shows full-screen patches for about a minute. Press Esc on it to cancel.")
+            Text("The display shows colour patches under the iPhone for about a minute. Press Esc on it to cancel.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -735,7 +753,7 @@ struct WhitePointSessionView: View {
                     Text("No correction worth keeping — the display was left as it was.").font(.headline)
                 }
                 if let before = record.baselineDeltaE {
-                    let target = session.matchReference ? String(localized: "the MacBook white") : "D65"
+                    let target = "D65"
                     if let after = record.bestDeltaE {
                         Text("Distance from \(target), ΔE00: \(String(format: "%.2f", before)) → \(String(format: "%.2f", after))")
                     } else {
@@ -751,6 +769,11 @@ struct WhitePointSessionView: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if session.rawChannelsMissing {
+                    Text("This D65 Probe sends no raw channels, so its readings weren’t corrected. Install the OpenDisplay build of the probe.")
+                        .font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if session.canKeep {
                     Toggle("Show the original", isOn: $session.showOriginal).toggleStyle(.switch).controlSize(.small)
                 }
@@ -760,27 +783,32 @@ struct WhitePointSessionView: View {
 
     @ViewBuilder private var referenceReview: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let white = session.measuredReference {
-                Text("MacBook white measured.").font(.headline)
-                Text("x \(String(format: "%.4f", white.x)) · y \(String(format: "%.4f", white.y)) · about \(Int(white.correlatedColorTemperature().rounded())) K")
-                    .monospacedDigit()
-                if abs(white.correlatedColorTemperature() - 6500) > 1000 {
-                    Text("A MacBook screen is close to 6500 K with True Tone and Night Shift off. A reading this far off usually means the phone misreads this panel, and matching to it would tint the externals the same way.")
-                        .font(.caption).foregroundStyle(.orange)
+            if let fitted = session.fitted {
+                Text(session.canKeep ? "iPhone characterized." : "The readings were too noisy to trust.").font(.headline)
+                if let white = session.firmwareWhite {
+                    Text("The iPhone’s own reading of the MacBook white: about \(Int(white.correlatedColorTemperature().rounded())) K (the screen is 6500 K).")
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Text("Save it as the reference, then calibrate each external display with “Match the MacBook screen” on.")
+                Text("Check — corrected, the white lands within Δxy \(String(format: "%.4f", fitted.whiteCheckError)) of 6500 K, with the white left out of the fit.")
+                    .monospacedDigit()
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(session.canKeep
+                     ? "Save it, then calibrate each external display with the correction on."
+                     : "Keep the phone still and flat on the patch, then try again.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if session.firmwareWhite != nil {
+                Text("This D65 Probe sends no raw channels, so it can’t be characterized. Install the OpenDisplay build of the probe.")
+                    .font(.headline).fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("The measurement wasn’t usable — try again with the phone flat inside the outline.").font(.headline)
+                Text("The measurement wasn’t usable — try again with the phone flat on the patch.").font(.headline)
             }
         }
     }
 
     private var placementText: String {
         switch session.placement.state {
-        case .waiting: return String(localized: "Waiting for the phone on the outline")
+        case .waiting: return String(localized: "Waiting for the phone on the patch")
         case .tooDark: return String(localized: "Too dark — the sensor must sit inside the outline")
         case .moving: return String(localized: "Hold the phone still")
         case .settling: return String(localized: "Hold still…")
@@ -794,7 +822,7 @@ struct WhitePointSessionView: View {
                 Button("Discard") { session.close(); onDone() }
                 Button("Try again") { session.retry() }
                 Spacer()
-                Button(session.purpose == .measureReference ? "Save as reference" : "Keep") { session.keep(); onDone() }
+                Button(session.purpose == .measureReference ? "Save" : "Keep") { session.keep(); onDone() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!session.canKeep)
             } else {
@@ -812,8 +840,8 @@ struct WhitePointSessionView: View {
 
 // MARK: - Display card
 
-/// The "White point" card on an external display's page: the MacBook reference, and this display's
-/// calibration (status, calibrate, remove).
+/// The "White point" card on an external display's page: the iPhone's MacBook characterization, and
+/// this display's calibration (status, calibrate, remove).
 struct WhitePointCard: View {
     @EnvironmentObject private var model: AppModel
     let display: DisplayObservation
@@ -822,7 +850,7 @@ struct WhitePointCard: View {
     var body: some View {
         ODCard(title: "White point",
                footnote: "Measured with the D65 Probe app on an iPhone placed on the screen. Corrects the white only, in software, while OpenDisplay runs.") {
-            ODRow("MacBook reference", secondary: referenceStatus) {
+            ODRow("iPhone characterization", secondary: referenceStatus) {
                 Button("Measure MacBook…") {
                     guard let builtIn = model.activeBuiltInDisplay, let cgID = builtIn.cgDisplayID else { return }
                     session = WhitePointSession(purpose: .measureReference, displayID: cgID,
@@ -856,18 +884,18 @@ struct WhitePointCard: View {
     }
 
     private var referenceStatus: String {
-        guard model.activeBuiltInDisplay != nil || model.calibrationReference != nil else {
+        guard model.activeBuiltInDisplay != nil || model.probeCharacterization != nil else {
             return String(localized: "Turn the built-in display on to measure it")
         }
-        guard let reference = model.calibrationReference else { return String(localized: "Not measured") }
-        let date = reference.measuredAt.formatted(.dateTime.month(.abbreviated).day())
-        return String(localized: "Measured with \(reference.probeModel) · \(date)")
+        guard let characterization = model.probeCharacterization else { return String(localized: "Not measured on the MacBook yet") }
+        let date = characterization.measuredAt.formatted(.dateTime.month(.abbreviated).day())
+        return String(localized: "\(characterization.probeModel) · check Δxy \(String(format: "%.3f", characterization.whiteCheckError)) · \(date)")
     }
 
     private var status: String {
         guard let calibration = model.calibration(for: display) else { return String(localized: "Not calibrated") }
         let date = calibration.calibratedAt.formatted(.dateTime.month(.abbreviated).day())
-        let target = calibration.matchedReference == true ? String(localized: "matches the MacBook") : "D65"
+        let target = calibration.matchedReference == true ? String(localized: "D65, corrected iPhone") : "D65"
         if let before = calibration.deltaEBefore, let after = calibration.deltaEAfter {
             return String(localized: "Calibrated to \(target) · ΔE \(String(format: "%.1f", before)) → \(String(format: "%.1f", after)) · \(date)")
         }

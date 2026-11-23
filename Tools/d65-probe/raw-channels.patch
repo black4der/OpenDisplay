@@ -1,0 +1,99 @@
+diff --git a/Apps/D65Probe/AmbientLightSensor.swift b/Apps/D65Probe/AmbientLightSensor.swift
+index 7589083..2d77fcb 100644
+--- a/Apps/D65Probe/AmbientLightSensor.swift
++++ b/Apps/D65Probe/AmbientLightSensor.swift
+@@ -24,7 +24,8 @@ import os
+         reader.onEvent = { [weak self] reading in
+             // Readings taken while the phone moves are dropped here, before they reach the Mac.
+             guard let self, self.stillness.isStable else { return }
+-            onSample(MeasurementSample(xyz: reading.xyz, lux: reading.lux, reportedCCT: reading.cct))
++            onSample(MeasurementSample(xyz: reading.xyz, lux: reading.lux, channels: reading.diagnostics,
++                                       reportedCCT: reading.cct))
+         }
+         reader.start(matching: true)
+     }
+@@ -39,7 +40,11 @@ let sensorLog = Logger(subsystem: "dev.tinnci.d65.probe", category: "sensor")
+ 
+ /// A thin wrapper over the IOHID monitor client. Only the main run loop touches it.
+ final class ALSReader {
+-    struct Reading { let xyz: XYZ; let lux: Double; let cct: Double }
++    /// `diagnostics` layout (OpenDisplay experiment): raw channels 0–3, colour-space flag (0 undefined,
++    /// 1 XYZ), illuminance, calibration-blob length, then the blob's bytes. Field numbers are from
++    /// Apple's open-source IOHIDEventFieldDefs.h (IOHIDFamily-1787): ALS fields 1–4, 6 and 11; the
++    /// blob is vendor-defined fields 3 (length) and 4 (data) on the first child event.
++    struct Reading { let xyz: XYZ; let lux: Double; let cct: Double; var diagnostics: [Double] = [] }
+ 
+     /// Every event that reaches the callback, ambient light or not (used by the Debug sensor check).
+     var onAnyEvent: ((Int32) -> Void)?
+@@ -84,7 +89,24 @@ final class ALSReader {
+         // Field IDs are (event type << 16) | field index.
+         let lux = Double(float(event, 0x000C_0000))
+         let xyz = XYZ(x: double(event, 0x000C_0007), y: double(event, 0x000C_0008), z: double(event, 0x000C_0009))
+-        onEvent?(Reading(xyz: xyz, lux: lux, cct: double(event, 0x000C_000A)))
++        var diagnostics = (1...4).map { double(event, 0x000C_0000 | Int32($0)) }
++        diagnostics.append(Double(api.getInteger?(event, 0x000C_0006) ?? -1))
++        diagnostics.append(double(event, 0x000C_000B))
++        diagnostics += calibrationBlob(event, api: api)
++        onEvent?(Reading(xyz: xyz, lux: lux, cct: double(event, 0x000C_000A), diagnostics: diagnostics))
++    }
++
++    /// `[length, byte0, byte1, …]`, or `[0]` when the event carries no child blob.
++    private func calibrationBlob(_ event: UnsafeMutableRawPointer, api: IOHIDAPI) -> [Double] {
++        // Get rule: the array is not retained for us.
++        guard let pointer = api.getChildren?(event) else { return [0] }
++        let children = Unmanaged<CFArray>.fromOpaque(pointer).takeUnretainedValue()
++        guard CFArrayGetCount(children) > 0,
++              let raw = CFArrayGetValueAtIndex(children, 0) else { return [0] }
++        let child = UnsafeMutableRawPointer(mutating: raw)
++        let length = api.getInteger?(child, 0x0001_0003) ?? 0
++        guard length > 0, length <= 512, let data = api.getData?(child, 0x0001_0004) else { return [Double(length)] }
++        return [Double(length)] + (0..<length).map { Double(data[$0]) }
+     }
+ }
+ 
+@@ -110,6 +132,9 @@ private struct IOHIDAPI {
+     let getType: (@convention(c) (Event) -> Int32)?
+     let getFloat: (@convention(c) (Event, Int32) -> Double)?
+     let getDouble: (@convention(c) (Event, Int32) -> Double)?
++    let getInteger: (@convention(c) (Event, Int32) -> Int)?
++    let getChildren: (@convention(c) (Event) -> UnsafeRawPointer?)?
++    let getData: (@convention(c) (Event, Int32) -> UnsafeMutablePointer<UInt8>?)?
+     let missing: [String]
+ 
+     init?() {
+@@ -127,6 +152,9 @@ private struct IOHIDAPI {
+         getType = symbol("IOHIDEventGetType", as: (@convention(c) (Event) -> Int32).self)
+         getFloat = symbol("IOHIDEventGetFloatValue", as: (@convention(c) (Event, Int32) -> Double).self)
+         getDouble = symbol("IOHIDEventGetDoubleValue", as: (@convention(c) (Event, Int32) -> Double).self)
++        getInteger = symbol("IOHIDEventGetIntegerValue", as: (@convention(c) (Event, Int32) -> Int).self)
++        getChildren = symbol("IOHIDEventGetChildren", as: (@convention(c) (Event) -> UnsafeRawPointer?).self)
++        getData = symbol("IOHIDEventGetDataValue", as: (@convention(c) (Event, Int32) -> UnsafeMutablePointer<UInt8>?).self)
+         self.missing = missing
+     }
+ }
+diff --git a/Apps/D65Probe/ProbeSensor.swift b/Apps/D65Probe/ProbeSensor.swift
+index e827903..f1bd3d9 100644
+--- a/Apps/D65Probe/ProbeSensor.swift
++++ b/Apps/D65Probe/ProbeSensor.swift
+@@ -45,7 +45,8 @@ final class StillnessMonitor: @unchecked Sendable {
+     private let lock = NSLock()
+     private var stable = false
+     /// Rotation in rad/s plus linear acceleration in g, as in the reference calibrator's gate.
+-    var threshold = 0.10
++    var threshold = 0.15
++    private var smoothed = 1.0
+ 
+     var isStable: Bool {
+         #if targetEnvironment(simulator)
+@@ -63,7 +64,10 @@ final class StillnessMonitor: @unchecked Sendable {
+             guard let self, let motion else { return }
+             let r = motion.rotationRate, a = motion.userAcceleration
+             let value = max(abs(r.x), abs(r.y), abs(r.z)) + max(abs(a.x), abs(a.y), abs(a.z)) * 2
+-            self.lock.lock(); self.stable = value < self.threshold; self.lock.unlock()
++            // A hand holding the phone to an upright monitor trembles in short spikes; smooth over
++            // ~0.2 s so only real movement (placing, lifting, sliding) counts. OpenDisplay change.
++            self.lock.lock(); self.smoothed = self.smoothed * 0.75 + value * 0.25
++            self.stable = self.smoothed < self.threshold; self.lock.unlock()
+         }
+     }
+     func stop() { manager.stopDeviceMotionUpdates() }

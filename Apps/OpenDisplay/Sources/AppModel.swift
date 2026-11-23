@@ -735,11 +735,11 @@ final class AppModel: ObservableObject {
     /// Built-in brightness to put back after a MacBook-reference session lit the panel.
     private var calibrationBrightnessRestore: [DisplayRecordID: Float] = [:]
 
-    /// The MacBook screen's white as the probe saw it (the "match the MacBook" target), if measured.
-    var calibrationReference: CalibrationReference? { settings.calibrationReference }
+    /// The iPhone probe's raw-channel correction, fitted on the MacBook screen, if measured.
+    var probeCharacterization: ProbeCharacterization? { settings.probeCharacterization }
 
-    func saveCalibrationReference(_ reference: CalibrationReference) {
-        settings.calibrationReference = reference
+    func saveProbeCharacterization(_ characterization: ProbeCharacterization) {
+        settings.probeCharacterization = characterization
         persistSettings()
     }
 

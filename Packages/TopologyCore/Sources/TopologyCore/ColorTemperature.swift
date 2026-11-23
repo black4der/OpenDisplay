@@ -81,7 +81,7 @@ public struct DisplayCalibration: Hashable, Sendable, Codable {
     public var deltaEBefore: Double?
     public var deltaEAfter: Double?
     public var calibratedAt: Date
-    /// True when it was steered to the MacBook reference rather than absolute D65 (nil in older entries).
+    /// True when measured with a probe corrected by its MacBook characterization (nil in older entries).
     public var matchedReference: Bool?
 
     public init(red: Float, green: Float, blue: Float, deltaEBefore: Double? = nil,

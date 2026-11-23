@@ -6,7 +6,9 @@ The full OpenDisplay app links the following third-party code. The public-API-on
 
 https://github.com/Tinnci/d65, pinned in `project.yml`. Linked as Swift packages (D65Core, D65Display,
 D65Calibration, D65Link, D65Host, D65MacRuntime). `Apps/OpenDisplay/Sources/WhitePointCalibration.swift`
-also adapts the probe listener from d65's `Sources/D65MacRuntime/NetworkTransport.swift`.
+also adapts the probe listener from d65's `Sources/D65MacRuntime/NetworkTransport.swift` and the patch
+overlay from `Sources/D65MacRuntime/PatchOverlay.swift`. `Tools/d65-probe/raw-channels.patch` modifies
+d65's iPhone probe (`Apps/D65Probe`).
 
 ```
 MIT License
