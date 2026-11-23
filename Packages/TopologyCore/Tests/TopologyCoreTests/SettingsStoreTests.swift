@@ -36,7 +36,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = SettingsStore(directory: directory)
         let preset = AppPresetPolicy.AppPreset(
             bundleIdentifier: "com.figma.Desktop", applicationName: "Figma",
-            brightness: 0.6, colorPreset: 4, target: .display("cgid:1"))
+            brightness: 0.6, target: .display("cgid:1"))
         let settings = OpenDisplaySettings(
             appPresetsEnabled: true, appPresets: [preset],
             appPresetPriorStateByDisplay: ["cgid:1": AppPresetPolicy.PriorState(brightness: 0.9)])
@@ -202,19 +202,15 @@ final class SettingsStoreTests: XCTestCase {
     func testAdaptiveFieldsDefaultOffAndRoundTrip() throws {
         // Both behaviors default OFF (opt-in Labs feature); tunables have sane defaults.
         let defaults = OpenDisplaySettings.default
-        XCTAssertFalse(defaults.adaptiveBrightnessSyncEnabled)
-        XCTAssertFalse(defaults.adaptiveWarmthEnabled)
+        XCTAssertTrue(defaults.autoBrightnessDisplays.isEmpty)
         XCTAssertEqual(defaults.adaptiveDayStartMinute, 420)
         XCTAssertEqual(defaults.adaptiveNightStartMinute, 1140)
-        XCTAssertEqual(defaults.adaptiveEveningPreset, 4)
         XCTAssertTrue(defaults.adaptiveDayPresetByDisplay.isEmpty)
 
         let store = SettingsStore(directory: directory)
         let settings = OpenDisplaySettings(
-            adaptiveBrightnessSyncEnabled: true,
-            adaptiveWarmthEnabled: true,
+            autoBrightnessDisplays: ["cg:abc"],
             adaptiveNightStartMinute: 1200,
-            adaptiveEveningPreset: 3,
             adaptiveDayPresetByDisplay: ["cg:abc": 2],
             adaptiveBrightnessOffsetByDisplay: ["cg:abc": -0.15]
         )
@@ -230,9 +226,21 @@ final class SettingsStoreTests: XCTestCase {
         let loaded = SettingsStore(directory: directory).load()
         XCTAssertEqual(loaded.persistencePolicy, .persistentOffline)
         XCTAssertTrue(loaded.mediaKeyInterceptionEnabled)
-        XCTAssertFalse(loaded.adaptiveBrightnessSyncEnabled)
-        XCTAssertEqual(loaded.adaptiveEveningPreset, 4)
+        XCTAssertTrue(loaded.autoBrightnessDisplays.isEmpty)
         XCTAssertTrue(loaded.adaptiveBrightnessOffsetByDisplay.isEmpty)
+    }
+
+    func testLegacyGlobalSyncSwitchMigratesToTheDisplaysItDrove() throws {
+        // The old single switch was on and had driven two displays (each left a learned offset).
+        let json = #"{"adaptiveBrightnessSyncEnabled":true,"#
+            + #""adaptiveBrightnessOffsetByDisplay":{"cg:a":0,"cg:b":0.25}}"#
+        try Data(json.utf8).write(to: directory.appendingPathComponent("settings.json"))
+        XCTAssertEqual(SettingsStore(directory: directory).load().autoBrightnessDisplays, ["cg:a", "cg:b"])
+
+        // Switch off: nothing is migrated, offsets or not.
+        let off = #"{"adaptiveBrightnessSyncEnabled":false,"adaptiveBrightnessOffsetByDisplay":{"cg:a":0}}"#
+        try Data(off.utf8).write(to: directory.appendingPathComponent("settings.json"))
+        XCTAssertTrue(SettingsStore(directory: directory).load().autoBrightnessDisplays.isEmpty)
     }
 
     func testClockScheduleFieldsDefaultOffAndRoundTrip() throws {
@@ -282,11 +290,11 @@ final class SettingsStoreTests: XCTestCase {
     func testPreClockSettingsFileDecodesToClockDefaults() throws {
         // A settings file from before Clock Mode existed loads with the user's values intact and the
         // clock fields at their defaults — never a wholesale fall back to .default.
-        let json = #"{"persistencePolicy":"persistentOffline","adaptiveWarmthEnabled":true}"#
+        let json = #"{"persistencePolicy":"persistentOffline","adaptiveLocationModeEnabled":true}"#
         try Data(json.utf8).write(to: directory.appendingPathComponent("settings.json"))
         let loaded = SettingsStore(directory: directory).load()
         XCTAssertEqual(loaded.persistencePolicy, .persistentOffline)
-        XCTAssertTrue(loaded.adaptiveWarmthEnabled)
+        XCTAssertTrue(loaded.adaptiveLocationModeEnabled)
         XCTAssertFalse(loaded.clockScheduleEnabled)
         XCTAssertTrue(loaded.clockScheduleEntries.isEmpty)
         XCTAssertNil(loaded.clockManualLocation)

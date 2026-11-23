@@ -52,7 +52,7 @@ public struct ODSectionLabel<Trailing: View>: View {
 
     public var body: some View {
         HStack(spacing: 4) {
-            Text(title.uppercased())
+            Text(title.localized.uppercased())
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(0.3)
                 .foregroundStyle(.tertiary)
@@ -102,7 +102,7 @@ public struct ODCard<Content: View>: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let title {
-                Text(title)
+                Text(title.localized)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
@@ -114,7 +114,7 @@ public struct ODCard<Content: View>: View {
                 .background(ODColor.cardBackground, in: RoundedRectangle(cornerRadius: ODRadius.card))
                 .overlay(RoundedRectangle(cornerRadius: ODRadius.card).strokeBorder(ODColor.separator, lineWidth: 0.5))
             if let footnote {
-                Text(footnote)
+                Text(footnote.localized)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -152,9 +152,9 @@ public struct ODRow<Leading: View, Trailing: View>: View {
         let row = HStack(spacing: 9) {
             leading
             VStack(alignment: .leading, spacing: 1) {
-                Text(label).font(.system(size: 13)).foregroundStyle(.primary).lineLimit(1)
+                Text(label.localized).font(.system(size: 13)).foregroundStyle(.primary).lineLimit(1)
                 if let secondary {
-                    Text(secondary).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(secondary.localized).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             Spacer(minLength: 6)

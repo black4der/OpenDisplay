@@ -158,6 +158,8 @@ targets:
       - Apps/OpenDisplay/Sources
       - path: Apps/OpenDisplay/Resources/AppIcon.icns
         buildPhase: resources
+      - path: Apps/OpenDisplay/Resources/Localization
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.opendisplay.app
@@ -196,6 +198,8 @@ targets:
     sources:
       - Apps/OpenDisplay/Sources
       - path: Apps/OpenDisplay/Resources/AppIcon.icns
+        buildPhase: resources
+      - path: Apps/OpenDisplay/Resources/Localization
         buildPhase: resources
     settings:
       base:

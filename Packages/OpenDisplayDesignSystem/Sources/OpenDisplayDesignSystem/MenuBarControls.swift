@@ -63,7 +63,7 @@ public struct ODSliderRow: View {
                 Slider(value: $value, in: range, onEditingChanged: onEditingChanged)
             }
         }
-        .accessibilityLabel(accessibilityLabel ?? "")
+        .accessibilityLabel((accessibilityLabel ?? "").localized)
     }
 }
 
@@ -89,7 +89,7 @@ public struct ODChip: View {
     public var body: some View {
         let chip = HStack(spacing: 4) {
             if let systemImage { Image(systemName: systemImage).font(.system(size: 10)) }
-            Text(text)
+            Text(text.localized)
         }
         .font(.system(size: 11, weight: .medium))
         .foregroundStyle(foreground)
@@ -143,7 +143,7 @@ public struct ODQuickAction: View {
         Button { if enabled { action() } } label: {
             HStack(spacing: 5) {
                 Image(systemName: systemImage).font(.system(size: 13))
-                Text(label).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                Text(label.localized).font(.system(size: 11, weight: .medium)).lineLimit(1)
             }
             .foregroundStyle(foreground)
             .frame(maxWidth: .infinity)

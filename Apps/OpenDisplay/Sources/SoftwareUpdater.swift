@@ -129,8 +129,7 @@ private struct DowngradeRefused: LocalizedError {
     let running: String
 
     var errorDescription: String? {
-        "The update feed offers OpenDisplay \(advertised), which is older than the \(running) you are "
-            + "running. Nothing was installed."
+        String(localized: "The update feed offers OpenDisplay \(advertised), which is older than the \(running) you are running. Nothing was installed.")
     }
 }
 

@@ -1,0 +1,2 @@
+/* Info.plist strings, Simplified Chinese. */
+"NSLocationWhenInUseUsageDescription" = "OpenDisplay 仅会使用一次你的位置，用于计算当地的日出、正午和日落时间，以便“时钟模式”安排亮度。你也可以手动输入坐标。";

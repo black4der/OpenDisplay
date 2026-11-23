@@ -31,7 +31,7 @@ public struct ODBadge: View {
     }
 
     public var body: some View {
-        Text(text)
+        Text(text.localized)
             .font(.system(size: 10, weight: .medium))
             .lineLimit(1)
             .foregroundStyle(foreground)

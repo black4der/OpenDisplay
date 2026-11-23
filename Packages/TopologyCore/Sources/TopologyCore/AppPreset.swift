@@ -1,7 +1,7 @@
 import Foundation
 
 /// Pure decision core for App Presets (Issue #33) — the "when this app comes to the front, switch the
-/// monitor to a brightness/contrast/colour preset, and put it back when the app leaves" feature.
+/// monitor to a brightness/contrast preset, and put it back when the app leaves" feature.
 ///
 /// Deterministic and clock-free in the same shape as `AdaptiveDisplayPolicy` and `FaceLightPolicy`:
 /// the caller injects `now` (used only for debounce arithmetic), threads a caller-owned
@@ -38,31 +38,29 @@ public enum AppPresetPolicy {
 
     /// One configured app preset (settings): "when `bundleIdentifier` is frontmost, drive `target`'s
     /// displays to these values". Each field is optional so a preset can set only brightness, or add
-    /// contrast and/or a colour preset. `applicationName` is a display label for the settings list.
+    /// contrast. `applicationName` is a display label for the settings list. (Colour presets were
+    /// dropped: monitors number them differently, so they are left to each monitor's own menu.)
     public struct AppPreset: Hashable, Sendable, Codable, Identifiable {
         public var id: UUID
         public var bundleIdentifier: String
         public var applicationName: String
         public var brightness: Float?
         public var contrast: Float?
-        public var colorPreset: Int?
         public var target: Target
 
         public init(id: UUID = UUID(), bundleIdentifier: String, applicationName: String,
-                    brightness: Float? = nil, contrast: Float? = nil, colorPreset: Int? = nil,
-                    target: Target = .allDisplays) {
+                    brightness: Float? = nil, contrast: Float? = nil, target: Target = .allDisplays) {
             self.id = id
             self.bundleIdentifier = bundleIdentifier
             self.applicationName = applicationName
             self.brightness = brightness
             self.contrast = contrast
-            self.colorPreset = colorPreset
             self.target = target
         }
 
         /// Whether this preset drives any hardware channel at all (an empty preset is a no-op).
         public var hasAnyWrite: Bool {
-            brightness != nil || contrast != nil || colorPreset != nil
+            brightness != nil || contrast != nil
         }
     }
 
@@ -72,12 +70,10 @@ public enum AppPresetPolicy {
     public struct PriorState: Hashable, Sendable, Codable {
         public var brightness: Float?
         public var contrast: Float?
-        public var colorPreset: Int?
 
-        public init(brightness: Float? = nil, contrast: Float? = nil, colorPreset: Int? = nil) {
+        public init(brightness: Float? = nil, contrast: Float? = nil) {
             self.brightness = brightness
             self.contrast = contrast
-            self.colorPreset = colorPreset
         }
     }
 
@@ -87,14 +83,11 @@ public enum AppPresetPolicy {
         public var recordID: String
         public var brightness: Float?
         public var contrast: Float?
-        public var colorPreset: Int?
 
-        public init(recordID: String, brightness: Float? = nil, contrast: Float? = nil,
-                    colorPreset: Int? = nil) {
+        public init(recordID: String, brightness: Float? = nil, contrast: Float? = nil) {
             self.recordID = recordID
             self.brightness = brightness
             self.contrast = contrast
-            self.colorPreset = colorPreset
         }
     }
 
@@ -141,14 +134,11 @@ public enum AppPresetPolicy {
         public var recordID: String
         public var brightness: Float?
         public var contrast: Float?
-        public var colorPreset: Int?
 
-        public init(recordID: String, brightness: Float? = nil, contrast: Float? = nil,
-                    colorPreset: Int? = nil) {
+        public init(recordID: String, brightness: Float? = nil, contrast: Float? = nil) {
             self.recordID = recordID
             self.brightness = brightness
             self.contrast = contrast
-            self.colorPreset = colorPreset
         }
     }
 
@@ -342,18 +332,15 @@ public enum AppPresetPolicy {
 
     private static func capturePrior(preset: AppPreset, snapshot: DisplaySnapshot?) -> PriorState {
         PriorState(brightness: preset.brightness != nil ? snapshot?.brightness : nil,
-                   contrast: preset.contrast != nil ? snapshot?.contrast : nil,
-                   colorPreset: preset.colorPreset != nil ? snapshot?.colorPreset : nil)
+                   contrast: preset.contrast != nil ? snapshot?.contrast : nil)
     }
 
     private static func applyWrite(recordID: String, preset: AppPreset) -> DisplayWrite {
-        DisplayWrite(recordID: recordID, brightness: preset.brightness, contrast: preset.contrast,
-                     colorPreset: preset.colorPreset)
+        DisplayWrite(recordID: recordID, brightness: preset.brightness, contrast: preset.contrast)
     }
 
     private static func restoreWrite(recordID: String, prior: PriorState) -> DisplayWrite {
-        DisplayWrite(recordID: recordID, brightness: prior.brightness, contrast: prior.contrast,
-                     colorPreset: prior.colorPreset)
+        DisplayWrite(recordID: recordID, brightness: prior.brightness, contrast: prior.contrast)
     }
 
     private static func snapshot(_ recordID: String, in displays: [DisplaySnapshot]) -> DisplaySnapshot? {

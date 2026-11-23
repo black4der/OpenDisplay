@@ -4,21 +4,17 @@ import XCTest
 final class AdaptiveDisplayPolicyTests: XCTestCase {
     private typealias Policy = AdaptiveDisplayPolicy
 
-    // Day 07:00, night 19:00, 30-min ramps, 0.8/0.35 plateaus, evening preset 4, hyst 0.02, cooldown 60s.
+    // Day 07:00, night 19:00, 30-min ramps, 0.8/0.35 plateaus, hyst 0.02, cooldown 60s.
     private let config = AdaptiveDisplayConfig()
     private let noon = 720, tenPM = 1320, oneAM = 60
 
     private func input(now: Date = Date(timeIntervalSinceReferenceDate: 0),
                        minute: Int, builtInPresent: Bool = true, builtIn: Float? = nil,
-                       lux: Double? = nil, asleep: Bool = false, currentPreset: Int? = nil,
-                       dayPreset: Int? = nil, nightShift: Bool? = nil, sync: Bool = false,
-                       warmth: Bool = false, scheduleOverride: Float? = nil,
-                       elevationDegrees: Double? = nil) -> Policy.Input {
+                       lux: Double? = nil, asleep: Bool = false, sync: Bool = false,
+                       scheduleOverride: Float? = nil, elevationDegrees: Double? = nil) -> Policy.Input {
         Policy.Input(now: now, minuteOfDay: minute, builtInPresent: builtInPresent,
                      builtInBrightness: builtIn, ambientLux: lux, displayAsleep: asleep,
-                     currentPreset: currentPreset, dayPreset: dayPreset,
-                     nightShiftActive: nightShift, brightnessSyncEnabled: sync,
-                     warmthEnabled: warmth, scheduleOverride: scheduleOverride,
+                     brightnessSyncEnabled: sync, scheduleOverride: scheduleOverride,
                      locationElevationDegrees: elevationDegrees)
     }
 
@@ -394,154 +390,27 @@ final class AdaptiveDisplayPolicyTests: XCTestCase {
         XCTAssertNil(decision.state.manualScheduleAnchor)
     }
 
-    // MARK: - Warmth
-
-    func testWarmthPrefersNightShiftSignalOverSchedule() {
-        // Noon (schedule says day) but Night Shift is ON → evening behavior.
-        var decision = Policy.evaluate(
-            input(minute: noon, currentPreset: 2, nightShift: true, warmth: true),
-            config: config, state: Policy.DisplayState())
-        XCTAssertEqual(decision.presetWrite, 4)
-        XCTAssertEqual(decision.rememberDayPreset, 2)
-
-        // 22:00 (schedule says night) but Night Shift is OFF → day behavior, restore owed preset.
-        decision = Policy.evaluate(
-            input(minute: tenPM, currentPreset: 4, dayPreset: 2, nightShift: false, warmth: true),
-            config: config, state: Policy.DisplayState(warmthPhase: .evening))
-        XCTAssertEqual(decision.presetWrite, 2)
-        XCTAssertTrue(decision.clearDayPreset)
-    }
-
-    func testWarmthFallsBackToScheduleWhenNightShiftNil() {
-        let decision = Policy.evaluate(
-            input(minute: tenPM, currentPreset: 2, nightShift: nil, warmth: true),
-            config: config, state: Policy.DisplayState())
-        XCTAssertEqual(decision.presetWrite, 4)  // schedule says night
-    }
-
-    func testDayToEveningRemembersDayPresetThenAppliesEvening() {
-        let decision = Policy.evaluate(
-            input(minute: tenPM, currentPreset: 2, warmth: true),
-            config: config, state: Policy.DisplayState())
-        XCTAssertEqual(decision.rememberDayPreset, 2)  // caller persists BEFORE the write
-        XCTAssertEqual(decision.presetWrite, 4)
-        XCTAssertEqual(decision.state.warmthPhase, .evening)
-        XCTAssertFalse(decision.clearDayPreset)
-    }
-
-    func testDayToEveningNeverOverwritesOwedDayPresetMemory() {
-        // Relaunch mid-evening: fresh state (.day) but memory says day preset 2 is owed, and the
-        // panel was power-cycled back to sRGB (1). The policy must re-apply evening WITHOUT
-        // re-capturing — remembering "1" (or worse, the warm preset) would corrupt the restore.
-        let decision = Policy.evaluate(
-            input(minute: tenPM, currentPreset: 1, dayPreset: 2, warmth: true),
-            config: config, state: Policy.DisplayState())
-        XCTAssertNil(decision.rememberDayPreset)
-        XCTAssertEqual(decision.presetWrite, 4)
-        XCTAssertFalse(decision.clearDayPreset)  // owed memory intact
-    }
-
-    func testEveningToDayRestoresAndClearsDayPreset() {
-        let decision = Policy.evaluate(
-            input(minute: noon, currentPreset: 4, dayPreset: 2, warmth: true),
-            config: config, state: Policy.DisplayState(warmthPhase: .evening))
-        XCTAssertEqual(decision.presetWrite, 2)
-        XCTAssertTrue(decision.clearDayPreset)
-        XCTAssertEqual(decision.state.warmthPhase, .day)
-    }
-
-    func testDayPhaseWithOwedPresetRestoresImmediately() {
-        // Crash recovery: launched during the day with leftover owed memory — restore right away,
-        // no phase transition needed.
-        let decision = Policy.evaluate(
-            input(minute: noon, currentPreset: 4, dayPreset: 2, warmth: true),
-            config: config, state: Policy.DisplayState(warmthPhase: .day))
-        XCTAssertEqual(decision.presetWrite, 2)
-        XCTAssertTrue(decision.clearDayPreset)
-    }
-
-    func testManualPresetDuringEveningAdoptsUntilNextTransitionThenMorningRestoreStillFires() {
-        // Evening active (preset 4 applied, day preset 2 owed); user picks preset 5 manually.
-        var state = Policy.DisplayState(warmthPhase: .evening)
-        state = Policy.noteManualPreset(state: state)
-        XCTAssertTrue(state.presetOverridden)
-
-        // Rest of the evening: no more preset writes.
-        var decision = Policy.evaluate(
-            input(minute: tenPM, currentPreset: 5, dayPreset: 2, warmth: true),
-            config: config, state: state)
-        XCTAssertNil(decision.presetWrite)
-
-        // Morning: the restore still fires and the adoption resets.
-        state = decision.state
-        decision = Policy.evaluate(
-            input(minute: noon, currentPreset: 5, dayPreset: 2, warmth: true),
-            config: config, state: state)
-        XCTAssertEqual(decision.presetWrite, 2)
-        XCTAssertTrue(decision.clearDayPreset)
-        XCTAssertFalse(decision.state.presetOverridden)
-
-        // Next evening uses the configured evening preset again (one-night adoption).
-        state = decision.state
-        decision = Policy.evaluate(
-            input(minute: tenPM, currentPreset: 2, warmth: true),
-            config: config, state: state)
-        XCTAssertEqual(decision.presetWrite, 4)
-    }
-
-    func testPresetDriftFromMonitorButtonsMarksOverridden() {
-        // Mid-evening the cache shows a preset we didn't apply (monitor buttons) → adopt it.
-        let decision = Policy.evaluate(
-            input(minute: tenPM, currentPreset: 3, dayPreset: 2, warmth: true),
-            config: config, state: Policy.DisplayState(warmthPhase: .evening))
-        XCTAssertTrue(decision.state.presetOverridden)
-        XCTAssertNil(decision.presetWrite)
-    }
-
-    func testCurrentPresetAlreadyEveningOwesNothing() {
-        // Panel already sits on the evening preset at transition time: nothing to remember,
-        // nothing to write — and critically, NO owed memory is created (a later restore would
-        // otherwise "restore" the warm preset as if it were the day one).
-        let decision = Policy.evaluate(
-            input(minute: tenPM, currentPreset: 4, warmth: true),
-            config: config, state: Policy.DisplayState())
-        XCTAssertNil(decision.presetWrite)
-        XCTAssertNil(decision.rememberDayPreset)
-        XCTAssertEqual(decision.state.warmthPhase, .evening)
-    }
-
     // MARK: - Gating
 
     func testAsleepDisplayProducesNoWrites() {
-        let state = Policy.DisplayState(warmthPhase: .day)
+        let state = Policy.DisplayState()
         let decision = Policy.evaluate(
-            input(minute: tenPM, builtIn: 0.9, asleep: true, currentPreset: 2, sync: true, warmth: true),
+            input(minute: tenPM, builtIn: 0.9, asleep: true, sync: true),
             config: config, state: state)
         XCTAssertNil(decision.brightnessWrite)
-        XCTAssertNil(decision.presetWrite)
         XCTAssertEqual(decision.state, state)
     }
 
-    func testDisabledFlagsAreIndependentNoOps() {
-        // Both off: nothing happens despite juicy inputs.
+    func testUngovernedDisplayIsLeftAlone() {
+        // Auto-brightness off (and no Clock/Location Mode): nothing happens despite juicy inputs.
         var decision = Policy.evaluate(
-            input(minute: tenPM, builtIn: 0.9, currentPreset: 2),
+            input(minute: tenPM, builtIn: 0.9, lux: 800),
             config: config, state: Policy.DisplayState())
         XCTAssertNil(decision.brightnessWrite)
-        XCTAssertNil(decision.presetWrite)
 
-        // Sync on, warmth off: brightness only.
         decision = Policy.evaluate(
-            input(minute: tenPM, builtIn: 0.9, currentPreset: 2, sync: true),
+            input(minute: tenPM, builtIn: 0.9, sync: true),
             config: config, state: Policy.DisplayState())
         XCTAssertNotNil(decision.brightnessWrite)
-        XCTAssertNil(decision.presetWrite)
-
-        // Warmth on, sync off: preset only.
-        decision = Policy.evaluate(
-            input(minute: tenPM, builtIn: 0.9, currentPreset: 2, warmth: true),
-            config: config, state: Policy.DisplayState())
-        XCTAssertNil(decision.brightnessWrite)
-        XCTAssertEqual(decision.presetWrite, 4)
     }
 }

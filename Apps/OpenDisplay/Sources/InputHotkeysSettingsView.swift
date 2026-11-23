@@ -82,7 +82,7 @@ private struct InputHotkeyRow: View {
 
     private var rowLabel: String {
         let input = entry.command.inputName(entry.inputCode)
-        let suffix = entry.command == .lgAlternate ? " (LG alternate)" : ""
+        let suffix = entry.command == .lgAlternate ? String(localized: " (LG alternate)") : ""
         return "\(displayLabel) \u{2192} \(input)\(suffix)"
     }
 
@@ -151,7 +151,7 @@ private struct AddInputHotkeySheet: View {
             }
             Picker("Command", selection: $selectedCommand) {
                 ForEach(InputSwitchCommand.allCases, id: \.self) { command in
-                    Text(command.label).tag(command)
+                    Text(command.label.localized).tag(command)
                 }
             }
             .onChange(of: selectedCommand) { _, command in
@@ -159,8 +159,8 @@ private struct AddInputHotkeySheet: View {
                 testStatus = nil
             }
             if selectedCommand == .lgAlternate {
-                Text("For LG monitors that ignore the standard input command for some inputs, often USB-C. "
-                     + "The USB-C value differs by model: if one doesn't work, try the other, or a custom value.")
+                Text(LocalizedStringKey("For LG monitors that ignore the standard input command for some inputs, often USB-C. "
+                     + "The USB-C value differs by model: if one doesn't work, try the other, or a custom value."))
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -220,11 +220,11 @@ private struct AddInputHotkeySheet: View {
         guard let displayID = selectedDisplayID, let inputCode else { return }
         let entry = candidate(displayID: displayID, inputCode: inputCode)
         isTesting = true
-        testStatus = "Sending\u{2026}"
+        testStatus = String(localized: "Sending\u{2026}")
         Task {
             let failure = await model.testInputSwitch(entry)
-            testStatus = failure.map { "Not sent: display \($0)." }
-                ?? "Sent. If the monitor didn't switch, try another value."
+            testStatus = failure.map { String(localized: "Not sent: display \($0).") }
+                ?? String(localized: "Sent. If the monitor didn't switch, try another value.")
             isTesting = false
         }
     }

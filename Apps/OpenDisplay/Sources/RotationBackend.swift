@@ -37,7 +37,7 @@ extension RotationBackend {
 /// The stable, App-Store-safe backend: reads rotation via public Core Graphics, refuses all writes.
 /// This is the default everywhere; the experimental SkyLight backend is opt-in and never the default.
 struct ReadOnlyRotationBackend: RotationBackend {
-    static let unavailableReason = "Rotation changes are not safely supported on this macOS version."
+    static let unavailableReason = String(localized: "Rotation changes are not safely supported on this macOS version.")
 
     var capability: RotationCapability { .unavailable(reason: Self.unavailableReason) }
 

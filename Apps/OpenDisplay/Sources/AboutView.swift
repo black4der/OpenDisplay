@@ -82,7 +82,7 @@ struct AboutView: View {
     private func aboutLink(_ link: AboutLink) -> some View {
         Link(destination: link.url) {
             Label {
-                Text(link.title).font(.callout)
+                Text(link.title.localized).font(.callout)
             } icon: {
                 Image(systemName: link.systemImage).frame(width: 18)
             }
@@ -90,6 +90,11 @@ struct AboutView: View {
         .foregroundStyle(ODColor.accent)
         .accessibilityHint("Opens in your browser")
     }
+}
+
+extension SoftwareUpdatePresentation {
+    /// `combinedTitle` with the title translated; the badge is a version number.
+    var localizedTitle: String { badge.map { "\(title.localized): \($0)" } ?? title.localized }
 }
 
 /// Mirrors the menu's update row: work in flight shows a spinner, everything else is a button that
@@ -104,14 +109,14 @@ struct UpdateCheckStatusView: View {
         if presentation.showsProgress {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text(presentation.combinedTitle).font(.callout).foregroundStyle(.secondary)
+                Text(presentation.localizedTitle).font(.callout).foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
         } else {
             Button {
                 model.checkForUpdates()
             } label: {
-                Label(presentation.combinedTitle, systemImage: presentation.systemImage)
+                Label(presentation.localizedTitle, systemImage: presentation.systemImage)
             }
             .controlSize(.small)
             .accessibilityHint("Checks for a new version, then downloads and installs it")

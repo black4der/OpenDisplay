@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- English is the fallback; Resources/Localization holds the en and zh-Hans tables. The in-app
+	     language picker (Settings › About) writes the per-app AppleLanguages override. -->
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
 	<key>CFBundleName</key>
 	<string>OpenDisplay</string>
 	<key>CFBundleDisplayName</key>

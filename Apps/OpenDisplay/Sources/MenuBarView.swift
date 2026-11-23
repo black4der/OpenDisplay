@@ -45,7 +45,7 @@ struct MenuBarView: View {
             VStack(alignment: .leading, spacing: 6) {
                 ODInlineBanner(tone: .orange, systemImage: "clock.arrow.circlepath",
                                title: "Keep these display settings?",
-                               message: "\(pending.message). Reverting in \(pending.secondsRemaining)s…")
+                               message: String(localized: "\(pending.message). Reverting in \(pending.secondsRemaining)s…"))
                 HStack(spacing: 8) {
                     Button("Keep") { model.confirmArrangementChange() }
                         .keyboardShortcut(.defaultAction)
@@ -226,7 +226,7 @@ private struct DisplayCard: View {
     }
 
     private var subtitle: String {
-        guard display.isActive else { return "Inactive" }
+        guard display.isActive else { return String(localized: "Inactive") }
         guard let mode = display.mode else { return "—" }
         return "\(mode.pointWidth) × \(mode.pointHeight) · \(Int(mode.refreshHz.rounded())) Hz"
     }
@@ -394,7 +394,7 @@ private struct MenuActionRow: View {
             HStack(spacing: 10) {
                 Image(systemName: systemImage).font(.system(size: 14)).frame(width: 18)
                     .foregroundStyle(active ? .secondary : .tertiary)
-                Text(title).font(.system(size: 13)).foregroundStyle(active ? .primary : .secondary)
+                Text(title.localized).font(.system(size: 13)).foregroundStyle(active ? .primary : .secondary)
                 Spacer()
                 if soon {
                     ODBadge("Soon")

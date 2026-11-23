@@ -73,7 +73,7 @@ private struct DisplayGroupSection: View {
         let connected = group.memberRecordIDs.filter { member in
             model.displays.contains { $0.recordID == member }
         }
-        return "\(group.memberRecordIDs.count) displays \u{00B7} \(connected.count) connected"
+        return String(localized: "\(group.memberRecordIDs.count) displays \u{00B7} \(connected.count) connected")
     }
 
     /// Every display that could sit in this group: the ones connected right now plus every display
@@ -120,7 +120,7 @@ private struct DisplayGroupMemberRow: View {
     /// moves it here, since a display belongs to one group), and a display that isn't plugged in —
     /// which the list now offers from the registry, so the row has to say so.
     private var membershipNote: String? {
-        if !isMember, let other = model.displayGroup(containing: member) { return "In \(other.name)" }
+        if !isMember, let other = model.displayGroup(containing: member) { return String(localized: "In \(other.name)") }
         return isConnected ? nil : "Not connected"
     }
 

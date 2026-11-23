@@ -82,6 +82,27 @@ public actor ExternalDisplayDDC {
         return ok
     }
 
+    /// Some scalers only act on a request that arrives twice. Measured live on a TCL R27U91 over
+    /// USB-C: a lone Get-VCP request is answered with a DDC/CI null message (`6e 80 be`) every
+    /// time, whatever the reply delay, and a lone Set-VCP is ACKed and dropped — but the same bytes
+    /// sent twice ~10ms apart (MonitorControl's default) are answered and applied every time. So:
+    /// writes are always doubled (Set-VCP carries an absolute value, a repeat is a no-op on a panel
+    /// that heard the first), and reads start single — healthy panels see exactly the traffic they
+    /// always did — switching this binding to doubled requests once a doubled retry is what got a reply.
+    private var doublesReadRequests = false
+    private static let repeatGapNanos: UInt64 = 10_000_000
+
+    /// Sends one request, or the same bytes twice `repeatGapNanos` apart. Caller holds the bus lock.
+    /// True if either send was ACKed: the repeat may NAK because the first already took effect
+    /// (a power-off, an input switch), which is not a failed command.
+    private func send(_ packet: [UInt8], source: UInt32 = ExternalDisplayDDC.i2cSource,
+                      doubled: Bool) async -> Bool {
+        let first = i2cWrite(packet, UInt32(packet.count), source: source)
+        guard doubled else { return first }
+        try? await Task.sleep(nanoseconds: Self.repeatGapNanos)
+        return i2cWrite(packet, UInt32(packet.count), source: source) || first
+    }
+
     private static let i2cChip: UInt32 = 0x37    // DDC/CI 7-bit I2C address
     private static let i2cSource: UInt32 = 0x51  // host source address (the "dataAddress" arg)
 
@@ -192,16 +213,17 @@ public actor ExternalDisplayDDC {
     private func readAttempt(_ code: UInt8, attempt: Int) async -> (current: Int, max: Int)? {
         let checksum = UInt8(0x6e ^ Int(Self.i2cSource) ^ 0x82 ^ 0x01) ^ code
         await paceBus()
-        var request: [UInt8] = [0x82, 0x01, code, checksum]
-        let wrote = i2cWrite(&request, 4)
+        let doubled = doublesReadRequests || attempt > 0
+        let wrote = await send([0x82, 0x01, code, checksum], doubled: doubled)
         markTransaction()
         guard wrote else { return nil }  // paceBus() spaces the retry
         try? await Task.sleep(nanoseconds: attempt == 0 ? Self.readReplyFirstNanos : Self.readReplyNanos)
         var buffer = [UInt8](repeating: 0, count: Self.readWindow)
         let readOK = i2cRead(&buffer, UInt32(Self.readWindow))
         markTransaction()
-        guard readOK else { return nil }
-        return Self.scanReply(in: buffer, vcp: code)
+        guard readOK, let reply = Self.scanReply(in: buffer, vcp: code) else { return nil }
+        if doubled { doublesReadRequests = true }
+        return reply
     }
 
     /// Bytes fetched per Get-VCP reply read. The frame itself is 11; the extra window is what lets
@@ -241,7 +263,7 @@ public actor ExternalDisplayDDC {
         await write(vcp: feature.rawValue, value)
     }
 
-    /// Raw-VCP variant of `write(_:_:)` — see `read(vcp:)`. Returns as soon as the I2C call does;
+    /// Raw-VCP variant of `write(_:_:)` — see `read(vcp:)`. Returns as soon as the doubled I2C send does;
     /// the mandatory settle time before the *next* transaction is enforced by pacing, not by
     /// sleeping here, so a single slider tick doesn't pay 50ms of dead latency.
     @discardableResult
@@ -259,7 +281,7 @@ public actor ExternalDisplayDDC {
         let packet = Self.setVCPPacket(vcp: code, value: value, sourceAddress: sourceAddress)
         await lockBus()
         await paceBus()
-        let ok = i2cWrite(packet, UInt32(packet.count), source: UInt32(sourceAddress))
+        let ok = await send(packet, source: UInt32(sourceAddress), doubled: true)
         markTransaction()
         unlockBus()
         return ok

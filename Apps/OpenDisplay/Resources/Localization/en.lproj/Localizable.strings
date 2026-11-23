@@ -1,0 +1,3 @@
+/* English is the development language: every key is its own English text, so this table stays
+   empty. It exists so English is a listed localization and an English system never falls back
+   to another language. */

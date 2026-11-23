@@ -15,8 +15,10 @@ enum NotificationDelivery {
 
     static func post(_ notification: NotificationPolicy.DisplayNotification) {
         let content = UNMutableNotificationContent()
-        content.title = notification.title
-        content.body = notification.body
+        // The policy lives in a cross-platform package and speaks English; fixed titles/bodies have
+        // entries in the app's string table, ones carrying a display name pass through unchanged.
+        content.title = Bundle.main.localizedString(forKey: notification.title, value: nil, table: nil)
+        content.body = Bundle.main.localizedString(forKey: notification.body, value: nil, table: nil)
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }

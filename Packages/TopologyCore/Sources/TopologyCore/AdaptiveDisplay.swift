@@ -12,8 +12,6 @@ public struct AdaptiveDisplayConfig: Hashable, Sendable {
     /// Schedule-fallback brightness plateaus (0...1).
     public var fallbackDayLevel: Float
     public var fallbackNightLevel: Float
-    /// Colour-preset code applied during the evening phase (MCCS 0x14).
-    public var eveningPreset: Int
     /// Minimum target movement before a DDC write is issued. Keeps quiet-light ticks write-free
     /// and bounds bus traffic; DDC values are 0...100 on most panels, so 0.02 ≈ 2 panel steps.
     public var hysteresis: Float
@@ -22,13 +20,12 @@ public struct AdaptiveDisplayConfig: Hashable, Sendable {
 
     public init(dayStartMinute: Int = 420, nightStartMinute: Int = 1140, transitionMinutes: Int = 30,
                 fallbackDayLevel: Float = 0.8, fallbackNightLevel: Float = 0.35,
-                eveningPreset: Int = 4, hysteresis: Float = 0.02, manualCooldown: TimeInterval = 60) {
+                hysteresis: Float = 0.02, manualCooldown: TimeInterval = 60) {
         self.dayStartMinute = dayStartMinute
         self.nightStartMinute = nightStartMinute
         self.transitionMinutes = transitionMinutes
         self.fallbackDayLevel = fallbackDayLevel
         self.fallbackNightLevel = fallbackNightLevel
-        self.eveningPreset = eveningPreset
         self.hysteresis = hysteresis
         self.manualCooldown = manualCooldown
     }
@@ -40,12 +37,12 @@ extension OpenDisplaySettings {
         AdaptiveDisplayConfig(
             dayStartMinute: adaptiveDayStartMinute, nightStartMinute: adaptiveNightStartMinute,
             transitionMinutes: adaptiveTransitionMinutes, fallbackDayLevel: adaptiveFallbackDayLevel,
-            fallbackNightLevel: adaptiveFallbackNightLevel, eveningPreset: adaptiveEveningPreset)
+            fallbackNightLevel: adaptiveFallbackNightLevel)
     }
 }
 
-/// Pure decision core for Adaptive Display (brightness sync + evening warmth), the "transfer the
-/// built-in display's intelligence to the external monitor" feature.
+/// Pure decision core for per-display auto-brightness (plus Clock Mode and Location Mode), the
+/// "transfer the built-in display's intelligence to the external monitor" feature.
 ///
 /// Deterministic and clock-free: the caller injects `now` (used only for cooldown arithmetic) and
 /// `minuteOfDay` (so the policy never touches Calendar/timezones), threads a caller-owned
@@ -53,8 +50,6 @@ extension OpenDisplaySettings {
 /// persistence, and UI side effects belong to the caller (AppModel) — this type is exercised by
 /// `make test` like `MediaKeyTargetPolicy` and `OSDPresentationPolicy`.
 public enum AdaptiveDisplayPolicy {
-    public enum WarmthPhase: String, Hashable, Sendable, Codable { case day, evening }
-
     /// Caller-owned per-display evolution state, threaded through `evaluate`.
     public struct DisplayState: Hashable, Sendable {
         /// Hysteresis anchor: the last brightness adaptive wrote (or adopted from a manual change).
@@ -67,21 +62,13 @@ public enum AdaptiveDisplayPolicy {
         /// schedule target stays within hysteresis of this anchor, adaptive holds off — a bare
         /// cooldown would snap the user's setting back after 60s even though nothing changed.
         public var manualScheduleAnchor: Float?
-        /// Which warmth phase the policy believes this display is in. Seed `.day`.
-        public var warmthPhase: WarmthPhase
-        /// The user picked a preset manually during the current evening phase — adopt it for the
-        /// rest of the phase (no more preset writes until the next transition).
-        public var presetOverridden: Bool
 
         public init(lastWrittenBrightness: Float? = nil, brightnessOffset: Float = 0,
-                    manualBrightnessAt: Date? = nil, manualScheduleAnchor: Float? = nil,
-                    warmthPhase: WarmthPhase = .day, presetOverridden: Bool = false) {
+                    manualBrightnessAt: Date? = nil, manualScheduleAnchor: Float? = nil) {
             self.lastWrittenBrightness = lastWrittenBrightness
             self.brightnessOffset = brightnessOffset
             self.manualBrightnessAt = manualBrightnessAt
             self.manualScheduleAnchor = manualScheduleAnchor
-            self.warmthPhase = warmthPhase
-            self.presetOverridden = presetOverridden
         }
     }
 
@@ -100,14 +87,9 @@ public enum AdaptiveDisplayPolicy {
         public var ambientLux: Double?
         /// This external is asleep — adaptive must not touch it at all.
         public var displayAsleep: Bool
-        /// The external's current colour preset (cache); nil ⇒ warmth is inert for this display.
-        public var currentPreset: Int?
-        /// Persisted day-preset memory (nil ⇒ no restore owed).
-        public var dayPreset: Int?
-        /// macOS Night Shift's live state; nil ⇒ reader unavailable → schedule decides evening.
-        public var nightShiftActive: Bool?
+        /// Whether anything governs this display's brightness (its auto-brightness switch, Clock Mode
+        /// or Location Mode); false ⇒ the tick leaves it alone.
         public var brightnessSyncEnabled: Bool
-        public var warmthEnabled: Bool
         /// Clock Mode's explicit scheduled brightness for this tick, or nil when Clock Mode isn't
         /// governing. When present it TAKES PRECEDENCE over the built-in mirror and the ambient
         /// curve — an explicit user schedule outranks the inferred sync — while reusing the same
@@ -121,43 +103,27 @@ public enum AdaptiveDisplayPolicy {
         public var locationElevationDegrees: Double?
 
         public init(now: Date, minuteOfDay: Int, builtInPresent: Bool, builtInBrightness: Float?,
-                    ambientLux: Double? = nil, displayAsleep: Bool, currentPreset: Int?,
-                    dayPreset: Int?, nightShiftActive: Bool?, brightnessSyncEnabled: Bool,
-                    warmthEnabled: Bool, scheduleOverride: Float? = nil,
-                    locationElevationDegrees: Double? = nil) {
+                    ambientLux: Double? = nil, displayAsleep: Bool, brightnessSyncEnabled: Bool,
+                    scheduleOverride: Float? = nil, locationElevationDegrees: Double? = nil) {
             self.now = now
             self.minuteOfDay = minuteOfDay
             self.builtInPresent = builtInPresent
             self.builtInBrightness = builtInBrightness
             self.ambientLux = ambientLux
             self.displayAsleep = displayAsleep
-            self.currentPreset = currentPreset
-            self.dayPreset = dayPreset
-            self.nightShiftActive = nightShiftActive
             self.brightnessSyncEnabled = brightnessSyncEnabled
-            self.warmthEnabled = warmthEnabled
             self.scheduleOverride = scheduleOverride
             self.locationElevationDegrees = locationElevationDegrees
         }
     }
 
-    /// What the caller should do this tick. Apply in THIS order: persist `rememberDayPreset`
-    /// (BEFORE the preset write — the restore-owed invariant), then `presetWrite`, then
-    /// `clearDayPreset` (persist the removal), then `brightnessWrite`, then store `state`.
+    /// What the caller should do this tick: issue `brightnessWrite` (if any), then store `state`.
     public struct Decision: Hashable, Sendable {
         public var brightnessWrite: Float?
-        public var presetWrite: Int?
-        public var rememberDayPreset: Int?
-        public var clearDayPreset: Bool
         public var state: DisplayState
 
-        public init(brightnessWrite: Float? = nil, presetWrite: Int? = nil,
-                    rememberDayPreset: Int? = nil, clearDayPreset: Bool = false,
-                    state: DisplayState) {
+        public init(brightnessWrite: Float? = nil, state: DisplayState) {
             self.brightnessWrite = brightnessWrite
-            self.presetWrite = presetWrite
-            self.rememberDayPreset = rememberDayPreset
-            self.clearDayPreset = clearDayPreset
             self.state = state
         }
     }
@@ -180,9 +146,8 @@ public enum AdaptiveDisplayPolicy {
         return scheduleIsNight(atMinute: minute, config: config) ? night : day
     }
 
-    /// Whether a minute-of-day falls in the night phase (for warmth, the schedule fallback when
-    /// Night Shift is unreadable). The evening phase begins AT `nightStartMinute` and ends AT
-    /// `dayStartMinute`; transitions don't apply to warmth — presets are discrete.
+    /// Whether a minute-of-day falls in the night phase: it begins AT `nightStartMinute` and ends
+    /// AT `dayStartMinute` (the plateau `scheduleLevel` returns outside the ramps).
     public static func scheduleIsNight(atMinute minute: Int, config: AdaptiveDisplayConfig) -> Bool {
         inWrappedRange(minute, from: config.nightStartMinute, to: config.dayStartMinute)
     }
@@ -254,64 +219,14 @@ public enum AdaptiveDisplayPolicy {
         return state
     }
 
-    /// Record a user-initiated colour-preset change: adopt it for the rest of the current warmth
-    /// phase (the configured evening preset is untouched — a one-night adoption).
-    public static func noteManualPreset(state: DisplayState) -> DisplayState {
-        var state = state
-        state.presetOverridden = true
-        return state
-    }
-
     // MARK: - Tick evaluation
 
     public static func evaluate(_ input: Input, config: AdaptiveDisplayConfig,
                                 state: DisplayState) -> Decision {
         var state = state
-        guard !input.displayAsleep else { return Decision(state: state) }
-
-        var brightnessWrite: Float?
-        if input.brightnessSyncEnabled {
-            brightnessWrite = brightnessDecision(input, config: config, state: &state)
-        }
-
-        var presetWrite: Int?
-        var rememberDayPreset: Int?
-        var clearDayPreset = false
-        if input.warmthEnabled, let currentPreset = input.currentPreset {
-            let isEvening = input.nightShiftActive ?? scheduleIsNight(atMinute: input.minuteOfDay,
-                                                                      config: config)
-            // Drift detection: some other hand (monitor buttons, another app) changed the preset
-            // mid-evening — adopt it exactly like an in-app manual change.
-            if state.warmthPhase == .evening, !state.presetOverridden,
-               currentPreset != config.eveningPreset, isEvening {
-                state.presetOverridden = true
-            }
-            if isEvening, state.warmthPhase == .day {
-                state.warmthPhase = .evening
-                state.presetOverridden = false
-                if currentPreset != config.eveningPreset {
-                    // Remember day ONLY when nothing is owed: after a relaunch mid-evening the
-                    // owed memory is the true day preset — re-capturing would save the warm one.
-                    if input.dayPreset == nil { rememberDayPreset = currentPreset }
-                    presetWrite = config.eveningPreset
-                }
-            } else if !isEvening {
-                if state.warmthPhase == .evening {
-                    state.warmthPhase = .day
-                    state.presetOverridden = false
-                }
-                // One rule covers the morning transition, crash-recovery at a daytime launch, and
-                // re-enable during day: any owed day preset gets restored and the memory cleared.
-                if let owed = input.dayPreset {
-                    if currentPreset != owed { presetWrite = owed }
-                    clearDayPreset = true
-                }
-            }
-        }
-
-        return Decision(brightnessWrite: brightnessWrite, presetWrite: presetWrite,
-                        rememberDayPreset: rememberDayPreset, clearDayPreset: clearDayPreset,
-                        state: state)
+        guard !input.displayAsleep, input.brightnessSyncEnabled else { return Decision(state: state) }
+        let brightnessWrite = brightnessDecision(input, config: config, state: &state)
+        return Decision(brightnessWrite: brightnessWrite, state: state)
     }
 
     private static func brightnessDecision(_ input: Input, config: AdaptiveDisplayConfig,

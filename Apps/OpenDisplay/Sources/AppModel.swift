@@ -59,8 +59,8 @@ enum BrightnessMethod: String, Hashable {
     var caption: String? {
         switch self {
         case .native: return nil
-        case .hardware: return "Hardware · DDC"
-        case .software: return "Software · gamma"
+        case .hardware: return String(localized: "Hardware · DDC")
+        case .software: return String(localized: "Software · gamma")
         }
     }
 }
@@ -89,7 +89,7 @@ enum FeatureFlags {
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var displays: [DisplayObservation] = []
-    @Published private(set) var statusText = "Scanning…"
+    @Published private(set) var statusText = String(localized: "Scanning…")
     @Published private(set) var busy = false
     @Published private(set) var diagnostics: [DisplayDiagnostic] = []
     @Published private(set) var phase: DisplayLoadPhase = .scanning
@@ -121,17 +121,11 @@ final class AppModel: ObservableObject {
     }
     /// Cached DDC hardware-control levels (0...1) keyed by display then VCP code (contrast/volume).
     @Published private(set) var ddcControlLevel: [DisplayRecordID: [UInt8: Float]] = [:]
-    /// Cached DDC capabilities (VCP 0xF3) per external display (Batch-2 #1): what the panel advertises,
-    /// so the UI/CLI only offer supported controls. Absent = not yet read → fall back to offering all.
-    @Published private(set) var ddcCapabilities: [DisplayRecordID: DDCCapabilities] = [:]
     /// Per-display software (gamma) dim level, 1 = no dim. Applies on top of hardware brightness and
     /// works on any display, including DDC-less externals and below the hardware minimum.
     @Published private(set) var softwareDim: [DisplayRecordID: Float] = [:]
     /// Current DDC input-source code (VCP 0x60) per external display.
     @Published private(set) var inputSource: [DisplayRecordID: Int] = [:]
-    /// Current DDC colour-preset code (VCP 0x14) per external display, and the max code it reports.
-    @Published private(set) var colorPreset: [DisplayRecordID: Int] = [:]
-    @Published private(set) var colorPresetMax: [DisplayRecordID: Int] = [:]
     /// VCP codes, per display, whose last DDC write the panel answered with a different value — it
     /// ACKed and then ignored (or clamped) the change, e.g. an LG whose picture mode locks contrast,
     /// or a colour-preset code the panel doesn't implement. The cached level has already been snapped
@@ -148,22 +142,13 @@ final class AppModel: ObservableObject {
     /// and parses every installed profile from disk, so it must never run during a SwiftUI body).
     @Published private(set) var availableColorProfilesCache: [ICCProfile] = []
 
-    /// Standard DDC colour-preset labels (VCP 0x14, MCCS 2.2 codes 0x01…0x0C). Monitors vary; the
-    /// menu offers the advertised codes (or a bounded 1...max guess) and labels the standard ones,
-    /// falling back to "Preset N".
-    static let presetNames: [Int: String] = [
-        1: "sRGB", 2: "Display native", 3: "4000K", 4: "5000K", 5: "6500K",
-        6: "7500K", 7: "8200K", 8: "9300K", 9: "10000K", 10: "11500K", 11: "User 1", 12: "User 2",
-    ]
-    func presetName(_ code: Int) -> String { Self.presetNames[code] ?? "Preset \(code)" }
-
     /// Common DDC/CI input-source codes (VCP 0x60). Monitors mostly follow these; the menu shows the
     /// live code too, so a non-standard panel is still legible.
     static let standardInputs = InputSwitchCommand.standardInputs
 
     /// Human label for a DDC input code, or "Code N" if non-standard.
     func inputName(_ code: Int) -> String {
-        Self.standardInputs.first { $0.code == code }?.name ?? "Code \(code)"
+        Self.standardInputs.first { $0.code == code }?.name ?? String(localized: "Code \(code)")
     }
 
     /// A display OpenDisplay turned off — remembered (and persisted) so it stays visible and
@@ -215,8 +200,6 @@ final class AppModel: ObservableObject {
     private var ddcControlWriter: [DDCControlKey: Task<Void, Never>] = [:]
     private var inputSourceTarget: [DisplayRecordID: Int] = [:]
     private var inputSourceWriter: [DisplayRecordID: Task<Void, Never>] = [:]
-    private var colorPresetTarget: [DisplayRecordID: Int] = [:]
-    private var colorPresetWriter: [DisplayRecordID: Task<Void, Never>] = [:]
     /// Per-display negative cache of VCP features that repeatedly failed to read, so refresh passes
     /// stop spending ~0.7s of retried I2C on every control the panel doesn't implement (with a
     /// periodic recheck baked into the tracker — see `DDCProbeTracker`). Dropped on disconnect.
@@ -234,10 +217,9 @@ final class AppModel: ObservableObject {
     private var appPresetObserver: NSObjectProtocol?
     /// One-shot re-evaluation armed by the policy's `rescheduleAfter` — the debounce timer.
     private var appPresetDebounceTask: Task<Void, Never>?
-    /// Displays an app preset currently governs. Adaptive/Clock brightness and warmth skip these so
+    /// Displays an app preset currently governs. Adaptive/Clock brightness skips these so
     /// the app preset stays the last writer (`AppPresetPolicy` precedence, documented + unit-tested).
     private var appPresetActiveDisplays: Set<DisplayRecordID> = []
-    private let nightShift = NightShiftStatusReader()
     private let ambientLight = AmbientLightReader()
     /// Clock Mode (Issue #30): one-shot Core Location helper for the "Use current location" button.
     private let clockLocationProvider = ClockLocationProvider()
@@ -420,8 +402,9 @@ final class AppModel: ObservableObject {
             await reassertManagedOfflineIntent()  // a stamped owed-"off" survives a relaunch; pay it if covered
             reconcileDisplaySleepGuard()  // hold/release the keep-awake assertion for the launch topology
             #if !PUBLIC_API_ONLY
-            reconcileAdaptiveLoop()  // start adaptive brightness/warmth if enabled for this topology
+            reconcileAdaptiveLoop()  // start auto-brightness / Clock / Location Mode if enabled
             await restoreOwedAppPresetState()  // crash-safe: relaunch mid-app-preset restores the baseline
+            await restoreOwedDayPresets()  // an older version's evening warmth may still owe one
             reconcileAppPresetObserver()  // observe the frontmost app if App Presets is enabled
             #endif
             autoDisconnectPolicy.seed(externalPresent: hasExternalDisplay)  // don't treat a pre-attached external as an arrival
@@ -1044,7 +1027,7 @@ final class AppModel: ObservableObject {
         guard let cgID = observation.cgDisplayID else { return [] }
         var info: [(String, String)] = [
             ("Name", displayName(for: observation)),
-            ("Type", observation.displayClass == .builtIn ? "Built-in" : "External"),
+            ("Type", observation.displayClass == .builtIn ? String(localized: "Built-in") : String(localized: "External")),
         ]
         let vendor = CGDisplayVendorNumber(cgID)
         let model = CGDisplayModelNumber(cgID)
@@ -1059,7 +1042,7 @@ final class AppModel: ObservableObject {
         let size = CGDisplayScreenSize(cgID)
         if size.width > 0, size.height > 0 {
             let inches = (size.width * size.width + size.height * size.height).squareRoot() / 25.4
-            info.append(("Size", String(format: "%.1f-inch", inches)))
+            info.append(("Size", String(format: NSLocalizedString("%.1f-inch", comment: "Diagonal size"), inches)))
         }
         return info
     }
@@ -1081,7 +1064,7 @@ final class AppModel: ObservableObject {
         await refresh()
         await noteLayoutSelfChange()
         sceneWarning = rotationSkipped
-            ? "Applied. Rotation in this scene was skipped — not supported on this macOS version."
+            ? String(localized: "Applied. Rotation in this scene was skipped — not supported on this macOS version.")
             : nil
     }
 
@@ -1123,7 +1106,6 @@ final class AppModel: ObservableObject {
         if !brightness.keys.allSatisfy(ids.contains) { brightness = brightness.filter { ids.contains($0.key) } }
         if !brightnessMethod.keys.allSatisfy(ids.contains) { brightnessMethod = brightnessMethod.filter { ids.contains($0.key) } }
         if !ddcControlLevel.keys.allSatisfy(ids.contains) { ddcControlLevel = ddcControlLevel.filter { ids.contains($0.key) } }
-        if !colorPreset.keys.allSatisfy(ids.contains) { colorPreset = colorPreset.filter { ids.contains($0.key) } }
         if !inputSource.keys.allSatisfy(ids.contains) { inputSource = inputSource.filter { ids.contains($0.key) } }
         if !colorProfileName.keys.allSatisfy(ids.contains) { colorProfileName = colorProfileName.filter { ids.contains($0.key) } }
         if !softwareDim.keys.allSatisfy(ids.contains) { softwareDim = softwareDim.filter { ids.contains($0.key) } }
@@ -1151,14 +1133,12 @@ final class AppModel: ObservableObject {
     private func pruneDDCCaches(to ids: Set<DisplayRecordID>) {
         for (id, task) in ddcWriters where !ids.contains(id) { task.cancel(); ddcWriters[id] = nil }
         for (id, task) in inputSourceWriter where !ids.contains(id) { task.cancel(); inputSourceWriter[id] = nil }
-        for (id, task) in colorPresetWriter where !ids.contains(id) { task.cancel(); colorPresetWriter[id] = nil }
         for (key, task) in ddcControlWriter where !ids.contains(key.id) { task.cancel(); ddcControlWriter[key] = nil }
         for (id, task) in ddcBuilders where !ids.contains(id) { task.cancel(); ddcBuilders[id] = nil }
         ddc = ddc.filter { ids.contains($0.key) }
         brightnessMax = brightnessMax.filter { ids.contains($0.key) }
         ddcTarget = ddcTarget.filter { ids.contains($0.key) }
         inputSourceTarget = inputSourceTarget.filter { ids.contains($0.key) }
-        colorPresetTarget = colorPresetTarget.filter { ids.contains($0.key) }
         ddcControlMax = ddcControlMax.filter { ids.contains($0.key.id) }
         ddcControlTarget = ddcControlTarget.filter { ids.contains($0.key.id) }
         ddcProbe = ddcProbe.filter { ids.contains($0.key) }
@@ -1217,7 +1197,7 @@ final class AppModel: ObservableObject {
         }
         // Guard against a no-op republish: the active/total count string is usually unchanged across
         // a refresh, and reassigning @Published fires objectWillChange and re-evaluates every view.
-        let status = "\(snapshot.activeDisplays.count) active · \(snapshot.observations.count) total"
+        let status = String(localized: "\(snapshot.activeDisplays.count) active · \(snapshot.observations.count) total")
         if statusText != status { statusText = status }
         phase = displays.isEmpty ? .empty : .ready
         await resolveRecords(snapshot)
@@ -1827,47 +1807,22 @@ final class AppModel: ObservableObject {
         #endif
     }
 
-    /// Whether the display advertises a VCP feature in its DDC capabilities (Batch-2 #1). **Fail-open:**
-    /// if capabilities haven't been read (or the panel didn't return any), returns true so nothing is
-    /// hidden just because discovery hasn't happened — capabilities only ever *remove* dead controls.
-    func ddcSupports(_ vcp: UInt8, for observation: DisplayObservation) -> Bool {
-        guard let caps = ddcCapabilities[observation.recordID] else { return true }
-        return caps.supports(vcp)
-    }
-
-    /// Reads + caches the display's DDC capabilities string (VCP 0xF3) once per external display.
-    ///
-    /// ⚠️ EXPLICIT / DIAGNOSTIC USE ONLY — do NOT call from the control-refresh path. The multi-chunk
-    /// `0xF3` read desynchronizes DDC/CI on some panels (Samsung S34J55x: it leaves the panel replaying a
-    /// stale reply buffer so every later read returns garbage and writes are ignored until a power-cycle).
-    /// Controls are fail-open without it (`ddcSupports` returns true when uncached), so the only thing
-    /// lost by not calling this is hiding genuinely-unsupported controls.
-    func refreshCapabilities(for observation: DisplayObservation) async {
-        #if !PUBLIC_API_ONLY
-        guard observation.displayClass != .builtIn, ddcCapabilities[observation.recordID] == nil,
-              let controller = await ddcController(for: observation),
-              let raw = await controller.readCapabilitiesString(),
-              let caps = DDCCapabilities.parse(raw) else { return }
-        ddcCapabilities[observation.recordID] = caps
-        #endif
-    }
-
-    /// Reads every hardware (DDC) control for an external display into the cache. Skips the built-in,
-    /// anything the capabilities string says is unsupported (when known — `ddcSupports` is fail-open),
+    /// Reads every hardware (DDC) control for an external display into the cache. Skips the built-in
     /// and any feature the panel doesn't read back. No-op in the public-API-only build.
     ///
-    /// NOTE: this deliberately does NOT auto-read the `0xF3` capabilities string. That multi-chunk read
+    /// NOTE: this deliberately does NOT read the `0xF3` capabilities string. That multi-chunk read
     /// desynchronizes DDC/CI on some panels (e.g. Samsung S34J55x), wedging *all* subsequent reads — it
-    /// is now an explicit, diagnostic-only path (CLI `ddc … caps`). See `refreshCapabilities`.
+    /// is an explicit, diagnostic-only path (CLI `ddc … caps`).
     func refreshHardwareControls(for observation: DisplayObservation) async {
         #if !PUBLIC_API_ONLY
         guard observation.displayClass != .builtIn, let controller = await ddcController(for: observation) else { return }
         let id = observation.recordID
         for control in HardwareControl.allCases {
             let vcp = control.vcp
-            guard ddcSupports(vcp, for: observation),
-                  ddcProbe[id, default: DDCProbeTracker()].admitProbe(vcp) else { continue }
-            if let reading = await controller.read(vcp: vcp), reading.max > 0 {
+            guard ddcProbe[id, default: DDCProbeTracker()].admitProbe(vcp) else { continue }
+            // A max of 0xFFFF is a placeholder, not a range: a TCL R27U91 answers volume "50/65535"
+            // with no speakers to drive, and a 0...1 slider scaled to it would write up to 65535.
+            if let reading = await controller.read(vcp: vcp), (1..<0xFFFF).contains(reading.max) {
                 ddcProbe[id, default: DDCProbeTracker()].recordSuccess(vcp)
                 ddcControlLevel[id, default: [:]][vcp] = Float(reading.current) / Float(reading.max)
                 ddcControlMax[DDCControlKey(id: id, vcp: vcp)] = reading.max
@@ -2000,7 +1955,7 @@ final class AppModel: ObservableObject {
         #if !PUBLIC_API_ONLY
         return await sendInputSwitch(entry)
         #else
-        return "needs the full build"
+        return String(localized: "needs the full build")
         #endif
     }
 
@@ -2010,13 +1965,13 @@ final class AppModel: ObservableObject {
     /// VCP 0xF4 from source address 0x50 (issue #45).
     private func sendInputSwitch(_ entry: InputSwitchBinding) async -> String? {
         guard let observation = displays.first(where: { $0.recordID == entry.displayID }) else {
-            return "is offline"
+            return String(localized: "is offline")
         }
-        guard let controller = await ddcController(for: observation) else { return "has no DDC control" }
+        guard let controller = await ddcController(for: observation) else { return String(localized: "has no DDC control") }
         let command = entry.command
         guard await controller.write(vcp: command.vcpCode, entry.inputCode,
                                      sourceAddress: command.sourceAddress) else {
-            return "rejected the input switch"
+            return String(localized: "rejected the input switch")
         }
         // The standard code is what VCP 0x60 reads back, so cache it; an LG alternate value isn't,
         // so drop the cache and let the next refresh read whatever the panel now reports.
@@ -2037,7 +1992,7 @@ final class AppModel: ObservableObject {
     private func notifyInputSwitchFailed(_ displayID: DisplayRecordID, reason: String) async {
         let name = await registry?.record(for: displayID)?.displayName ?? displayID.rawValue
         NotificationDelivery.post(NotificationPolicy.DisplayNotification(
-            title: "Input switch failed", body: "\(name) \(reason)."
+            title: String(localized: "Input switch failed"), body: String(localized: "\(name) \(reason).")
         ))
     }
     #endif
@@ -2182,62 +2137,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// The colour-preset codes to offer for a display. VCP 0x14 (Select Color Preset) is a
-    /// **non-continuous** enum: the panel only honours the specific values it advertises in its DDC
-    /// capabilities, so we offer those (when known) rather than a contiguous 1...max range — otherwise
-    /// most selections are codes the monitor silently ignores and the control appears to "do nothing".
-    /// Falls back to 1...max only when capabilities haven't been read, clamped to the MCCS-defined
-    /// preset range (some panels report max = 65535 for this feature, which would build a 65,535-item
-    /// menu and hang the app). The current preset is always included so the menu stays truthful.
-    func colorPresetCodes(for observation: DisplayObservation) -> [Int] {
-        DDCCapabilities.offeredValues(
-            ddcCapabilities[observation.recordID], for: 0x14,
-            fallbackMax: colorPresetMax[observation.recordID] ?? 5,
-            current: colorPreset[observation.recordID])
-    }
-
-    /// Reads the external display's current DDC colour preset (VCP 0x14) + its max code into the cache.
-    /// Does NOT auto-fetch the capabilities string (it wedges some panels — see `refreshHardwareControls`);
-    /// `colorPresetCodes` falls back to a 1...max menu when capabilities aren't cached.
-    func refreshColorPreset(for observation: DisplayObservation) async {
-        #if !PUBLIC_API_ONLY
-        let id = observation.recordID
-        let vcp = ExternalDisplayDDC.Feature.colorPreset.rawValue
-        // Controller before admitProbe — see refreshInputSource.
-        guard observation.displayClass != .builtIn,
-              let controller = await ddcController(for: observation),
-              ddcProbe[id, default: DDCProbeTracker()].admitProbe(vcp) else { return }
-        guard let reading = await controller.read(vcp: vcp) else {
-            ddcProbe[id, default: DDCProbeTracker()].recordFailure(vcp)
-            return
-        }
-        ddcProbe[id, default: DDCProbeTracker()].recordSuccess(vcp)
-        colorPreset[id] = reading.current
-        colorPresetMax[id] = max(reading.max, 1)
-        clearWriteIgnored(vcp, id: id)
-        #endif
-    }
-
-    /// Sets the external display's DDC colour preset (sRGB / colour-temperature / native). User-driven.
-    /// Coalesced per display (like input source) so rapid taps settle on the last choice in order.
-    func setColorPreset(_ code: Int, for observation: DisplayObservation) {
-        #if !PUBLIC_API_ONLY
-        guard observation.displayClass != .builtIn else { return }
-        let id = observation.recordID
-        // A user-picked preset during an adaptive evening is adopted for the rest of the phase
-        // (one-night adoption) — the policy stops issuing preset writes until the next transition.
-        if settings.adaptiveWarmthEnabled {
-            adaptiveStates[id] = AdaptiveDisplayPolicy.noteManualPreset(
-                state: adaptiveStates[id] ?? seededAdaptiveState(for: id))
-        }
-        colorPreset[id] = code
-        colorPresetTarget[id] = code
-        if colorPresetWriter[id] == nil {
-            colorPresetWriter[id] = Task { [weak self] in await self?.drainColorPresetWrites(id, observation) }
-        }
-        #endif
-    }
-
     /// Restores the monitor's factory settings (MCCS VCP 0x04) and clears OpenDisplay's own software
     /// layers for the display, so "Reset to defaults" means the picture really is back at baseline —
     /// a factory-fresh panel under a leftover gamma dim or warmth would still look "wrong".
@@ -2253,7 +2152,6 @@ final class AppModel: ObservableObject {
               let controller = await ddcController(for: observation) else { return }
         let id = observation.recordID
         ddcTarget[id] = nil
-        colorPresetTarget[id] = nil
         inputSourceTarget[id] = nil
         ddcControlTarget = ddcControlTarget.filter { $0.key.id != id }
         let sent = await controller.write(.restoreFactoryDefaults, 1)
@@ -2278,51 +2176,19 @@ final class AppModel: ObservableObject {
         resetDDCProbeCache(for: id)
         await refreshBrightness(for: observation)
         await refreshHardwareControls(for: observation)
-        await refreshColorPreset(for: observation)
         await refreshInputSource(for: observation)
         #endif
     }
 
     #if !PUBLIC_API_ONLY
-    private func drainColorPresetWrites(_ id: DisplayRecordID, _ observation: DisplayObservation) async {
-        guard var controller = await ddcController(for: observation) else { colorPresetWriter[id] = nil; return }
-        let vcp = ExternalDisplayDDC.Feature.colorPreset.rawValue
-        var retryAvailable = true
-        while true {
-            var lastTarget: Int?
-            while let target = colorPresetTarget[id] {
-                colorPresetTarget[id] = nil
-                lastTarget = target
-                _ = await drainWrite(vcp: vcp, target, via: &controller, retryAvailable: &retryAvailable,
-                                     observation: observation)
-            }
-            guard let lastTarget else { break }
-            switch await readBackAfterDrain(controller, vcp: vcp, settleNanos: Self.presetSettleNanos,
-                                            superseded: { [weak self] in self?.colorPresetTarget[id] != nil }) {
-            case .cancelled: return
-            case .superseded: continue
-            case .reading(let reading):
-                // Discrete enum: exact match only. A panel that doesn't implement the code stays on
-                // its current one (LG honours only 5/8/11), so show that instead of the pick. The
-                // adaptive warmth loop sees the snapped value too, and treats a refused evening
-                // preset as drift — it stops re-sending a write the panel will never take.
-                let outcome = DDCWriteVerification.outcome(target: lastTarget, readback: reading?.current)
-                noteWriteVerification(outcome, vcp: vcp, id: id)
-                if case .ignored(let actual) = outcome { colorPreset[id] = actual }
-            }
-            break
-        }
-        colorPresetWriter[id] = nil
-    }
-
-    // MARK: - Adaptive Display (Labs): brightness sync + evening warmth
+    // MARK: - Adaptive Display: per-display auto-brightness, Clock Mode, Location Mode
 
     /// Idempotent start/stop of the adaptive sampling loop — runs only while a feature toggle is on
     /// AND an active external exists (mirrors `reconcileMediaKeyTap`/`reconcileDisplaySleepGuard`).
     /// 5s cadence: one cheap DisplayServices IPC per tick; slower would visibly lag the built-in
     /// panel animating right next to the external, faster buys nothing through the 0.02 hysteresis.
     func reconcileAdaptiveLoop() {
-        let anyModeOn = settings.adaptiveBrightnessSyncEnabled || settings.adaptiveWarmthEnabled
+        let anyModeOn = !settings.autoBrightnessDisplays.isEmpty
             || settings.clockScheduleEnabled || settings.adaptiveLocationModeEnabled
         let wantRunning = anyModeOn && sessionGate.permitsAutomaticDisplayActions
             && displays.contains { $0.isActive && $0.displayClass != .builtIn }
@@ -2346,40 +2212,31 @@ final class AppModel: ObservableObject {
     /// then preset, then the memory clear, then brightness.
     private func adaptiveTick() async {
         let config = settings.adaptiveConfig
-        let syncOn = settings.adaptiveBrightnessSyncEnabled
-        let warmthOn = settings.adaptiveWarmthEnabled
+        let autoIDs = settings.autoBrightnessDisplays
         let clockOn = settings.clockScheduleEnabled && !settings.clockScheduleEntries.isEmpty
         let locationOn = settings.adaptiveLocationModeEnabled
-        guard syncOn || warmthOn || clockOn || locationOn else { return }
+        guard !autoIDs.isEmpty || clockOn || locationOn else { return }
 
         let now = Date()
         let comps = Calendar.current.dateComponents([.hour, .minute], from: now)
         let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
         // Clock Mode target for this tick (nil when disabled, no entries, or only solar entries
         // with no location). When present it governs brightness AND takes precedence over the
-        // built-in mirror, so the mirror sampling is skipped entirely.
+        // light sources, so their sampling is skipped entirely.
         let clockTarget = clockOn ? clockScheduleBrightness(atMinute: minuteOfDay, on: now) : nil
-        let mirrorActive = syncOn && clockTarget == nil
+        // The light sensor is worth reading only while some display's auto-brightness follows it.
+        let sensorActive = !autoIDs.isEmpty && clockTarget == nil
         // Location Mode's sun-elevation reading, cheap pure math so it's always sampled when the
         // mode is on and a location is configured; the policy itself decides precedence against
         // the built-in mirror and ambient sensor (see `AdaptiveDisplayPolicy.brightnessDecision`).
         let locationElevation = locationElevationDegrees(at: now)
-        let brightnessGoverned = mirrorActive || clockTarget != nil || locationElevation != nil
 
-        let builtInObs = displays.first { $0.displayClass == .builtIn && $0.isActive }
-        var builtInSample: Float?
-        if mirrorActive, let builtIn = builtInObs, let builtInCG = builtIn.cgDisplayID {
-            let control = brightnessControl
-            builtInSample = await Task.detached(priority: .utility) { control.brightness(for: builtInCG) }.value
-            // Keep the built-in's own slider live too — macOS auto-brightness moves it under us.
-            if let sample = builtInSample, abs((brightness[builtIn.recordID] ?? -1) - sample) > 0.004 {
-                brightness[builtIn.recordID] = sample
-            }
-        }
-        if mirrorActive, builtInObs == nil {
-            // Built-in off: read the ambient light sensor directly (lid-open-display-off setups —
-            // the sensor keeps reporting even though macOS drives no panel from it). EMA-smoothed;
-            // an unreadable sensor (lid actually closed) clears it → schedule mode.
+        // Auto-brightness reads the ambient light sensor itself, like a Mac display's own setting —
+        // never the built-in panel's brightness: in a desk setup that panel is off or turned all the
+        // way down, and mirroring it took every external to 0. The sensor keeps reporting while the
+        // built-in is off as long as the lid is open; an unreadable sensor (lid closed) clears the
+        // reading, and Location Mode or the schedule takes over. EMA-smoothed.
+        if sensorActive {
             let reader = ambientLight
             if let sample = await Task.detached(priority: .utility, operation: { reader.lux() }).value {
                 ambientLuxEMA = ambientLuxEMA.map { $0 * 0.6 + sample * 0.4 } ?? sample
@@ -2387,12 +2244,7 @@ final class AppModel: ObservableObject {
                 ambientLuxEMA = nil
             }
         } else {
-            ambientLuxEMA = nil  // built-in active (or sync off): ambient mode dormant
-        }
-        var nightShiftActive: Bool?
-        if warmthOn {
-            let reader = nightShift
-            nightShiftActive = await Task.detached(priority: .utility) { reader.isActive() }.value
+            ambientLuxEMA = nil
         }
 
         for observation in displays where observation.displayClass != .builtIn && observation.isActive {
@@ -2405,37 +2257,22 @@ final class AppModel: ObservableObject {
             // alone so adaptive/clock never fights the preset it just applied.
             if appPresetActiveDisplays.contains(id) { continue }
             // A grouped display's brightness is driven by its group (Issue #39) — the two features
-            // are mutually exclusive per display, so adaptive leaves brightness alone here. Warmth is
-            // orthogonal (groups never touch the colour preset) and keeps running.
-            let groupDrivesBrightness = DisplayGroupStore.isGroupGoverned(id, in: settings.displayGroups)
-            if warmthOn, colorPreset[id] == nil { await refreshColorPreset(for: observation) }
+            // are mutually exclusive per display, so adaptive leaves it alone here.
+            if DisplayGroupStore.isGroupGoverned(id, in: settings.displayGroups) { continue }
+            let auto = autoIDs.contains(id.rawValue)
+            guard auto || clockTarget != nil || locationElevation != nil else { continue }
 
             let state = adaptiveStates[id] ?? seededAdaptiveState(for: id)
             let input = AdaptiveDisplayPolicy.Input(
                 now: now, minuteOfDay: minuteOfDay,
-                // Only a candidate source when brightness sync itself is enabled — otherwise a lid-
-                // open built-in would block Location Mode from ever reaching its elevation branch.
-                builtInPresent: syncOn && builtInObs != nil,
-                builtInBrightness: builtInSample,
-                ambientLux: ambientLuxEMA,
+                // The sensor only counts for a display whose own switch is on.
+                builtInPresent: false,
+                builtInBrightness: nil,
+                ambientLux: auto ? ambientLuxEMA : nil,
                 displayAsleep: CGDisplayIsAsleep(cgID) != 0,
-                currentPreset: colorPreset[id],
-                dayPreset: settings.adaptiveDayPresetByDisplay[id.rawValue],
-                nightShiftActive: nightShiftActive,
-                brightnessSyncEnabled: brightnessGoverned && !groupDrivesBrightness,
-                warmthEnabled: warmthOn,
+                brightnessSyncEnabled: true,
                 scheduleOverride: clockTarget, locationElevationDegrees: locationElevation)
             let decision = AdaptiveDisplayPolicy.evaluate(input, config: config, state: state)
-
-            if let dayPreset = decision.rememberDayPreset {
-                settings.adaptiveDayPresetByDisplay[id.rawValue] = dayPreset
-                persistSettings()  // BEFORE the evening write — a crash between must still owe a restore
-            }
-            if let preset = decision.presetWrite { applyAdaptivePreset(preset, for: observation) }
-            if decision.clearDayPreset {
-                settings.adaptiveDayPresetByDisplay[id.rawValue] = nil
-                persistSettings()
-            }
             if let value = decision.brightnessWrite { applyAdaptiveBrightness(value, for: observation) }
             // Learned offsets persist at tick-time, not per slider move — no disk spam mid-drag.
             if settings.adaptiveBrightnessOffsetByDisplay[id.rawValue] != decision.state.brightnessOffset {
@@ -2484,21 +2321,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// OSD-silent adaptive preset apply. Updates the cache first so the policy's drift detection
-    /// doesn't mistake our own write for a monitor-button change on the next tick.
-    private func applyAdaptivePreset(_ code: Int, for observation: DisplayObservation) {
-        let id = observation.recordID
-        colorPreset[id] = code
-        colorPresetTarget[id] = code
-        if colorPresetWriter[id] == nil {
-            colorPresetWriter[id] = Task { [weak self] in await self?.drainColorPresetWrites(id, observation) }
-        }
-    }
-
-    /// Restores every owed daytime colour preset (quit / warmth-disable), awaited directly on the
-    /// DDC controller so process exit can't race the fire-and-forget writers. Entries whose display
-    /// isn't currently present stay persisted — the day-phase restore rule picks them up whenever
-    /// the display returns.
+    /// Restores any daytime colour preset still owed from evening warmth (a removed feature — see
+    /// `adaptiveDayPresetByDisplay`), at launch and quit, awaited directly on the DDC controller so
+    /// process exit can't race it. Entries whose display isn't present stay persisted for next time.
     private func restoreOwedDayPresets() async {
         guard !settings.adaptiveDayPresetByDisplay.isEmpty else { return }
         var remaining = settings.adaptiveDayPresetByDisplay
@@ -2507,7 +2332,6 @@ final class AppModel: ObservableObject {
                   observation.isActive,
                   let controller = await ddcController(for: observation) else { continue }
             await controller.write(.colorPreset, code)
-            colorPreset[observation.recordID] = code
             remaining[rawID] = nil
         }
         if remaining != settings.adaptiveDayPresetByDisplay {
@@ -2520,7 +2344,7 @@ final class AppModel: ObservableObject {
     /// a synced external): learn the offset in sync/ambient/location mode, anchor the adoption in
     /// schedule mode.
     private func noteManualBrightnessForAdaptive(_ value: Float, id: DisplayRecordID) {
-        let syncOn = settings.adaptiveBrightnessSyncEnabled
+        let syncOn = settings.autoBrightnessDisplays.contains(id.rawValue)
         let clockOn = settings.clockScheduleEnabled && !settings.clockScheduleEntries.isEmpty
         guard syncOn || clockOn || settings.adaptiveLocationModeEnabled else { return }
         let now = Date()
@@ -2530,15 +2354,12 @@ final class AppModel: ObservableObject {
         let locationLevel = (clockTarget == nil ? locationElevationDegrees(at: now) : nil)
             .map(AdaptiveDisplayPolicy.locationLevel(forElevationDegrees:))
         // The offset-teaching reference is whatever brightness is currently following: nothing when
-        // Clock Mode governs (schedule-like adoption), else the built-in's level in sync mode, the
-        // light-sensor curve in ambient mode, or the sun-elevation curve in Location Mode. The
-        // adoption anchor is the governing schedule target.
-        let builtIn = displays.first { $0.displayClass == .builtIn && $0.isActive }
+        // Clock Mode governs (schedule-like adoption), else the light-sensor curve for an
+        // auto-brightness display, or the sun-elevation curve in Location Mode. The adoption anchor
+        // is the governing schedule target.
         let reference: Float? = clockTarget != nil
             ? nil
-            : (syncOn ? builtIn.flatMap { brightness[$0.recordID] }
-                    ?? ambientLuxEMA.map(AdaptiveDisplayPolicy.ambientLevel(forLux:)) : nil)
-                ?? locationLevel
+            : (syncOn ? ambientLuxEMA.map(AdaptiveDisplayPolicy.ambientLevel(forLux:)) : nil) ?? locationLevel
         let scheduleTarget = clockTarget
             ?? locationLevel
             ?? AdaptiveDisplayPolicy.scheduleLevel(atMinute: minute, config: settings.adaptiveConfig)
@@ -2550,9 +2371,9 @@ final class AppModel: ObservableObject {
     /// One-line adaptive status for the display detail card, or nil when adaptive isn't acting on
     /// this display (built-in, features off, or no hardware brightness).
     func adaptiveStatusLine(for observation: DisplayObservation) -> String? {
+        let auto = autoBrightnessEnabled(for: observation)
         guard observation.displayClass != .builtIn,
-              settings.adaptiveBrightnessSyncEnabled || settings.adaptiveWarmthEnabled
-                || settings.clockScheduleEnabled || settings.adaptiveLocationModeEnabled,
+              auto || settings.clockScheduleEnabled || settings.adaptiveLocationModeEnabled,
               brightnessMethod[observation.recordID] == .hardware else { return nil }
         let id = observation.recordID
         let state = adaptiveStates[id]
@@ -2564,47 +2385,44 @@ final class AppModel: ObservableObject {
         let clockTarget = clockOn ? clockScheduleBrightness(atMinute: minuteOfDay, on: now) : nil
         if let clockTarget {
             // Clock Mode governs brightness and outranks the adaptive mirror.
-            parts.append("clock \(Int((clockTarget * 100).rounded()))%")
-        } else if settings.adaptiveBrightnessSyncEnabled || settings.adaptiveLocationModeEnabled {
+            parts.append(String(localized: "clock \(Int((clockTarget * 100).rounded()))%"))
+        } else if auto || settings.adaptiveLocationModeEnabled {
             if let manualAt = state?.manualBrightnessAt,
                Date() < manualAt.addingTimeInterval(settings.adaptiveConfig.manualCooldown) {
-                parts.append("brightness paused (manual)")
-            } else if settings.adaptiveBrightnessSyncEnabled,
-                      displays.contains(where: { $0.displayClass == .builtIn && $0.isActive }) {
-                let offset = Int(((state?.brightnessOffset ?? 0) * 100).rounded())
-                parts.append(offset == 0 ? "following built-in"
-                                         : String(format: "following built-in (%+d%%)", offset))
-            } else if settings.adaptiveBrightnessSyncEnabled, let lux = ambientLuxEMA {
-                parts.append("following room light (\(Int(lux.rounded())) lx)")
+                parts.append(String(localized: "brightness paused (manual)"))
+            } else if auto, let lux = ambientLuxEMA {
+                parts.append(String(localized: "following room light (\(Int(lux.rounded())) lx)"))
             } else if let elevation = locationElevationDegrees(at: now) {
-                parts.append("following sun position (\(Int(elevation.rounded()))°)")
+                parts.append(String(localized: "following sun position (\(Int(elevation.rounded()))°)"))
             } else {
-                parts.append("on schedule (no light sensor)")
+                parts.append(String(localized: "on schedule (no light sensor)"))
             }
         }
-        if settings.adaptiveWarmthEnabled {
-            parts.append(state?.warmthPhase == .evening ? "evening warmth active" : "day colour")
-        }
         guard !parts.isEmpty else { return nil }
-        let usesAdaptive = settings.adaptiveBrightnessSyncEnabled || settings.adaptiveWarmthEnabled
-            || settings.adaptiveLocationModeEnabled
-        let prefix = usesAdaptive ? "Adaptive: " : "Clock Mode: "
+        let prefix = auto || settings.adaptiveLocationModeEnabled
+            ? String(localized: "Adaptive: ") : String(localized: "Clock Mode: ")
         return prefix + parts.joined(separator: " · ")
     }
 
-    func setAdaptiveBrightnessSyncEnabled(_ enabled: Bool) {
-        guard settings.adaptiveBrightnessSyncEnabled != enabled else { return }
-        settings.adaptiveBrightnessSyncEnabled = enabled
-        persistSettings()
-        reconcileAdaptiveLoop()
+    func autoBrightnessEnabled(for observation: DisplayObservation) -> Bool {
+        settings.autoBrightnessDisplays.contains(observation.recordID.rawValue)
     }
 
-    func setAdaptiveWarmthEnabled(_ enabled: Bool) {
-        guard settings.adaptiveWarmthEnabled != enabled else { return }
-        settings.adaptiveWarmthEnabled = enabled
+    /// The per-display auto-brightness switch. Turning it on starts from the light curve itself —
+    /// an offset learned earlier (possibly against another source) is dropped — and dragging the
+    /// slider afterwards teaches a new one.
+    func setAutoBrightness(_ enabled: Bool, for observation: DisplayObservation) {
+        let key = observation.recordID.rawValue
+        guard autoBrightnessEnabled(for: observation) != enabled else { return }
+        if enabled {
+            settings.autoBrightnessDisplays.insert(key)
+            settings.adaptiveBrightnessOffsetByDisplay[key] = 0
+            adaptiveStates[observation.recordID] = nil
+        } else {
+            settings.autoBrightnessDisplays.remove(key)
+        }
         persistSettings()
         reconcileAdaptiveLoop()
-        if !enabled { Task { [weak self] in await self?.restoreOwedDayPresets() } }
     }
 
     /// Toggles Location Mode: brightness follows the sun's elevation at `clockManualLocation` when
@@ -2614,12 +2432,6 @@ final class AppModel: ObservableObject {
         settings.adaptiveLocationModeEnabled = enabled
         persistSettings()
         reconcileAdaptiveLoop()
-    }
-
-    func setAdaptiveEveningPreset(_ code: Int) {
-        guard settings.adaptiveEveningPreset != code else { return }
-        settings.adaptiveEveningPreset = code
-        persistSettings()
     }
 
     /// The schedule-fallback brightness plateaus (0.1...1) — what clamshell mode dims between.
@@ -2775,8 +2587,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Reads the current brightness (and colour preset, when the incoming preset sets one) for every
-    /// governed display whose cache is cold, so the captured baseline reflects what is really on screen
+    /// Reads the current brightness for every governed display whose cache is cold, so the captured baseline reflects what is really on screen
     /// rather than a nil placeholder. No-op when the frontmost app has no preset (a restore reads only
     /// the ledger).
     private func primeAppPresetCaches(frontmostBundleID: String?) async {
@@ -2788,9 +2599,6 @@ final class AppModel: ObservableObject {
             if brightnessMethod[id] == nil { await refreshBrightness(for: observation) }
             guard brightnessMethod[id] == .hardware else { continue }
             if brightness[id] == nil { await refreshBrightness(for: observation) }
-            if incoming.colorPreset != nil, colorPreset[id] == nil {
-                await refreshColorPreset(for: observation)
-            }
         }
     }
 
@@ -2814,7 +2622,7 @@ final class AppModel: ObservableObject {
                   settings.faceLightPriorStateByDisplay[id.rawValue] == nil else { return nil }
             return AppPresetPolicy.DisplaySnapshot(
                 recordID: id.rawValue, brightness: brightness[id],
-                contrast: ddcControl(.contrast, for: observation), colorPreset: colorPreset[id])
+                contrast: ddcControl(.contrast, for: observation))
         }
     }
 
@@ -2850,7 +2658,6 @@ final class AppModel: ObservableObject {
         if let contrast = write.contrast {
             setHardwareControl(.contrast, contrast, for: observation, isGroupSync: true)
         }
-        if let code = write.colorPreset { applyAdaptivePreset(code, for: observation) }
     }
 
     /// Arms the one-shot debounce re-check, replacing any prior timer. On fire it re-evaluates against
@@ -2891,7 +2698,7 @@ final class AppModel: ObservableObject {
         appPresetActiveDisplays = []
     }
 
-    /// Writes one display's pre-preset brightness/contrast/colour-preset back on the awaited DDC
+    /// Writes one display's pre-preset brightness/contrast back on the awaited DDC
     /// controller (like `restoreFaceLightPrior`), falling back to the software brightness route when
     /// the panel exposes no controller.
     private func restoreAppPresetPrior(_ prior: AppPresetPolicy.PriorState,
@@ -2911,10 +2718,6 @@ final class AppModel: ObservableObject {
         if let contrast = prior.contrast {
             await restoreFaceLightContrast(contrast, id: id, controller: controller)
         }
-        if let code = prior.colorPreset {
-            await controller.write(.colorPreset, code)
-            colorPreset[id] = code
-        }
     }
     #endif
 
@@ -2927,7 +2730,7 @@ final class AppModel: ObservableObject {
 
     /// The "synced with <group>" caption for a display's detail row, or nil when it isn't grouped.
     func groupSyncCaption(for observation: DisplayObservation) -> String? {
-        displayGroup(containing: observation.recordID).map { "Synced with \($0.name)" }
+        displayGroup(containing: observation.recordID).map { String(localized: "Synced with \($0.name)") }
     }
 
     /// A name for a display that may not be present right now: its live/aliased name when the
@@ -3063,7 +2866,7 @@ final class AppModel: ObservableObject {
     }
 
     /// True while `observation` is currently FaceLight's fill light (ledger presence IS the flag,
-    /// exactly like `adaptiveDayPresetByDisplay` doubles as the evening-warmth "is active" flag).
+    /// exactly like the other restore ledgers).
     func isFaceLightActive(_ observation: DisplayObservation) -> Bool {
         settings.faceLightPriorStateByDisplay[observation.recordID.rawValue] != nil
     }
@@ -3146,7 +2949,7 @@ final class AppModel: ObservableObject {
     /// and reverts itself unless confirmed within the window.
     func setMode(_ mode: DisplayMode, for observation: DisplayObservation) async {
         guard let cgID = observation.cgDisplayID else { return }
-        await applyWithRevert("Resolution changed on \(displayName(for: observation))") {
+        await applyWithRevert(String(localized: "Resolution changed on \(displayName(for: observation))")) {
             _ = self.observer.applyArrangement([.init(displayID: cgID, origin: nil, mode: mode)])
         }
     }
@@ -4429,12 +4232,9 @@ final class AppModel: ObservableObject {
     }
 
     /// External displays that can take DDC audio (VCP 0x62) — the only valid volume-key targets. The
-    /// built-in is never included, so its volume keys pass through to system volume. Fail-open: an
-    /// external whose capabilities haven't been read yet is treated as capable (`ddcSupports`).
+    /// built-in is never included, so its volume keys pass through to system volume.
     private func volumeCapableDisplayIDs() -> Set<DisplayRecordID> {
-        Set(displays
-            .filter { $0.displayClass != .builtIn && ddcSupports(HardwareControl.volume.vcp, for: $0) }
-            .map(\.recordID))
+        Set(displays.filter { $0.displayClass != .builtIn }.map(\.recordID))
     }
 
     /// The display the system's default audio output is routing through, or nil when the sound isn't

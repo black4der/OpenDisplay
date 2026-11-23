@@ -37,13 +37,11 @@ struct LaunchAtLoginToggle: View {
     }
 
     private var caption: String {
-        if let failure { return "Couldn\u{2019}t change the login item: \(failure)" }
+        if let failure { return String(localized: "Couldn\u{2019}t change the login item: \(failure)") }
         if status == .requiresApproval {
-            return "macOS is holding this until you allow OpenDisplay under System Settings \u{2192} "
-                + "General \u{2192} Login Items."
+            return String(localized: "macOS is holding this until you allow OpenDisplay under System Settings \u{2192} General \u{2192} Login Items.")
         }
-        return "Starts OpenDisplay when you log in, so its display rules and brightness sync are "
-            + "there without you opening it."
+        return String(localized: "Starts OpenDisplay when you log in, so its display rules and brightness sync are there without you opening it.")
     }
 
     private func setEnabled(_ enabled: Bool) {

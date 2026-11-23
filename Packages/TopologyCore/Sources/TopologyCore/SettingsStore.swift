@@ -47,14 +47,12 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
     /// BEFORE the max-brightness write and cleared after every restore, so a crash/relaunch
     /// mid-FaceLight still restores correctly (mirrors `adaptiveDayPresetByDisplay`).
     public var faceLightPriorStateByDisplay: [String: FaceLightPolicy.PriorState]
-    /// Adaptive Display (Labs): mirror the built-in panel's (ambient-light-driven) brightness to
-    /// external displays' hardware backlight over DDC; falls back to the schedule curve below when
-    /// no built-in is active (clamshell). Default off.
-    public var adaptiveBrightnessSyncEnabled: Bool
-    /// Adaptive Display (Labs): switch external displays' hardware colour preset (VCP 0x14) to a
-    /// warm preset in the evening and back in the morning. Follows macOS Night Shift's live state
-    /// when readable; otherwise the schedule below. Default off.
-    public var adaptiveWarmthEnabled: Bool
+    /// Auto-brightness, per display (`DisplayRecordID.rawValue`): these externals' hardware backlight
+    /// follows the Mac's ambient light — the built-in panel's own auto-brightness while it is on, the
+    /// light sensor directly while it is off with the lid open, and the schedule (or Location Mode)
+    /// below with the lid closed. Opt-in per display, like a Mac display's own setting. Replaces
+    /// the single "match the built-in" switch older versions had (migrated on decode).
+    public var autoBrightnessDisplays: Set<String>
     /// Minute-of-day the adaptive "day" phase begins (default 420 = 07:00).
     public var adaptiveDayStartMinute: Int
     /// Minute-of-day the adaptive "night" phase begins (default 1140 = 19:00).
@@ -65,13 +63,10 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
     public var adaptiveFallbackDayLevel: Float
     /// Schedule-fallback brightness during the night phase, 0...1 (default 0.35).
     public var adaptiveFallbackNightLevel: Float
-    /// Colour-preset code applied in the evening (MCCS 0x14; default 4 = 5000 K — mild warmth).
-    public var adaptiveEveningPreset: Int
-    /// Day-preset memory, keyed by `DisplayRecordID.rawValue` (String keys — raw-representable
-    /// dictionary keys encode as flat arrays in JSON). INVARIANT: a key is present if and only if
-    /// an evening preset is currently applied and a day restore is owed; persisted BEFORE the
-    /// evening write and cleared after every restore, so a crash/relaunch mid-evening still
-    /// restores correctly and never re-captures the warm preset as "day".
+    /// Day-preset memory left by evening warmth, a removed feature that switched monitors' colour
+    /// presets at night: keyed by `DisplayRecordID.rawValue`, a key means that display was left on
+    /// its evening preset and its daytime one is still owed. Nothing writes it any more; it is kept
+    /// so an upgrade mid-evening still restores the monitor (at quit) instead of stranding it warm.
     public var adaptiveDayPresetByDisplay: [String: Int]
     /// Learned brightness offsets (user's manual tweak relative to the built-in), keyed by
     /// `DisplayRecordID.rawValue`; survives relaunch so sync resumes at the user's preference.
@@ -84,9 +79,8 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
     public var adaptiveLocationModeEnabled: Bool
     /// Clock Mode (Issue #30): apply a user-authored brightness schedule to external displays. Each
     /// entry is time- or solar-anchored with a per-anchor minute offset and a transition style.
-    /// Default off. When on, Clock Mode's scheduled brightness takes precedence over Adaptive
-    /// Display's built-in mirror (an explicit schedule outranks the inferred sync); Adaptive warmth
-    /// is orthogonal and unaffected.
+    /// Default off. When on, Clock Mode's scheduled brightness takes precedence over per-display
+    /// auto-brightness (an explicit schedule outranks the inferred one).
     public var clockScheduleEnabled: Bool
     /// The Clock Mode schedule entries applied to every external display (shared schedule).
     public var clockScheduleEntries: [ClockScheduleEntry]
@@ -165,14 +159,12 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         osdPosition: OSDPosition = .bottomCenter,
         publishOSDEventsEnabled: Bool = false,
         faceLightPriorStateByDisplay: [String: FaceLightPolicy.PriorState] = [:],
-        adaptiveBrightnessSyncEnabled: Bool = false,
-        adaptiveWarmthEnabled: Bool = false,
+        autoBrightnessDisplays: Set<String> = [],
         adaptiveDayStartMinute: Int = 420,
         adaptiveNightStartMinute: Int = 1140,
         adaptiveTransitionMinutes: Int = 30,
         adaptiveFallbackDayLevel: Float = 0.8,
         adaptiveFallbackNightLevel: Float = 0.35,
-        adaptiveEveningPreset: Int = 4,
         adaptiveDayPresetByDisplay: [String: Int] = [:],
         adaptiveBrightnessOffsetByDisplay: [String: Float] = [:],
         adaptiveLocationModeEnabled: Bool = false,
@@ -210,14 +202,12 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         self.osdPosition = osdPosition
         self.publishOSDEventsEnabled = publishOSDEventsEnabled
         self.faceLightPriorStateByDisplay = faceLightPriorStateByDisplay
-        self.adaptiveBrightnessSyncEnabled = adaptiveBrightnessSyncEnabled
-        self.adaptiveWarmthEnabled = adaptiveWarmthEnabled
+        self.autoBrightnessDisplays = autoBrightnessDisplays
         self.adaptiveDayStartMinute = adaptiveDayStartMinute
         self.adaptiveNightStartMinute = adaptiveNightStartMinute
         self.adaptiveTransitionMinutes = adaptiveTransitionMinutes
         self.adaptiveFallbackDayLevel = adaptiveFallbackDayLevel
         self.adaptiveFallbackNightLevel = adaptiveFallbackNightLevel
-        self.adaptiveEveningPreset = adaptiveEveningPreset
         self.adaptiveDayPresetByDisplay = adaptiveDayPresetByDisplay
         self.adaptiveBrightnessOffsetByDisplay = adaptiveBrightnessOffsetByDisplay
         self.adaptiveLocationModeEnabled = adaptiveLocationModeEnabled
@@ -243,6 +233,9 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
 
     public static let `default` = OpenDisplaySettings()
 
+    /// Keys read only to migrate older files; never written.
+    private enum LegacyKeys: String, CodingKey { case adaptiveBrightnessSyncEnabled }
+
     private enum CodingKeys: String, CodingKey {
         case persistencePolicy, confirmationCountdownSeconds, reconnectAllHotkeyEnabled
         case preventDisplaySleepWithExternal
@@ -257,14 +250,12 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         case osdPosition
         case publishOSDEventsEnabled
         case faceLightPriorStateByDisplay
-        case adaptiveBrightnessSyncEnabled
-        case adaptiveWarmthEnabled
+        case autoBrightnessDisplays
         case adaptiveDayStartMinute
         case adaptiveNightStartMinute
         case adaptiveTransitionMinutes
         case adaptiveFallbackDayLevel
         case adaptiveFallbackNightLevel
-        case adaptiveEveningPreset
         case adaptiveDayPresetByDisplay
         case adaptiveBrightnessOffsetByDisplay
         case adaptiveLocationModeEnabled
@@ -327,10 +318,6 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
             ?? defaults.publishOSDEventsEnabled
         faceLightPriorStateByDisplay = container.lenient([String: FaceLightPolicy.PriorState].self, forKey: .faceLightPriorStateByDisplay)
             ?? defaults.faceLightPriorStateByDisplay
-        adaptiveBrightnessSyncEnabled = container.lenient(Bool.self, forKey: .adaptiveBrightnessSyncEnabled)
-            ?? defaults.adaptiveBrightnessSyncEnabled
-        adaptiveWarmthEnabled = container.lenient(Bool.self, forKey: .adaptiveWarmthEnabled)
-            ?? defaults.adaptiveWarmthEnabled
         adaptiveDayStartMinute = container.lenient(Int.self, forKey: .adaptiveDayStartMinute)
             ?? defaults.adaptiveDayStartMinute
         adaptiveNightStartMinute = container.lenient(Int.self, forKey: .adaptiveNightStartMinute)
@@ -341,12 +328,17 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
             ?? defaults.adaptiveFallbackDayLevel
         adaptiveFallbackNightLevel = container.lenient(Float.self, forKey: .adaptiveFallbackNightLevel)
             ?? defaults.adaptiveFallbackNightLevel
-        adaptiveEveningPreset = container.lenient(Int.self, forKey: .adaptiveEveningPreset)
-            ?? defaults.adaptiveEveningPreset
         adaptiveDayPresetByDisplay = container.lenient([String: Int].self, forKey: .adaptiveDayPresetByDisplay)
             ?? defaults.adaptiveDayPresetByDisplay
-        adaptiveBrightnessOffsetByDisplay = container.lenient([String: Float].self, forKey: .adaptiveBrightnessOffsetByDisplay)
+        let offsets = container.lenient([String: Float].self, forKey: .adaptiveBrightnessOffsetByDisplay)
             ?? defaults.adaptiveBrightnessOffsetByDisplay
+        adaptiveBrightnessOffsetByDisplay = offsets
+        // Older files had one global "match the built-in" switch. Carry it over to the displays it
+        // was driving: every display the loop ever drove has a learned-offset entry.
+        let legacySyncOn = (try? decoder.container(keyedBy: LegacyKeys.self))?
+            .lenient(Bool.self, forKey: .adaptiveBrightnessSyncEnabled) ?? false
+        autoBrightnessDisplays = container.lenient(Set<String>.self, forKey: .autoBrightnessDisplays)
+            ?? (legacySyncOn ? Set(offsets.keys) : defaults.autoBrightnessDisplays)
         adaptiveLocationModeEnabled = container.lenient(Bool.self, forKey: .adaptiveLocationModeEnabled)
             ?? defaults.adaptiveLocationModeEnabled
         clockScheduleEnabled = container.lenient(Bool.self, forKey: .clockScheduleEnabled)

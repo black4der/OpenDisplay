@@ -166,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             let hosting = NSHostingController(rootView: SettingsView().environmentObject(model))
             let created = NSWindow(contentViewController: hosting)
-            created.title = "OpenDisplay Settings"
+            created.title = String(localized: "OpenDisplay Settings")
             created.styleMask = [.titled, .closable, .miniaturizable]
             created.isReleasedWhenClosed = false
             created.setContentSize(NSSize(width: 720, height: 520))
@@ -195,7 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             let hosting = NSHostingController(rootView: AboutView().environmentObject(model))
             let created = NSWindow(contentViewController: hosting)
-            created.title = "About OpenDisplay"
+            created.title = String(localized: "About OpenDisplay")
             created.styleMask = [.titled, .closable]
             created.isReleasedWhenClosed = false
             aboutWindow = created

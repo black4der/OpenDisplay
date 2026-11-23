@@ -67,9 +67,9 @@ enum ColorProfileService {
         }
         if let factory = info["FactoryProfiles"] as? NSDictionary,
            let url = factory.allValues.compactMap({ $0 as? URL }).first {
-            return (profileDescription(url) ?? url.deletingPathExtension().lastPathComponent) + " (factory)"
+            return (profileDescription(url) ?? url.deletingPathExtension().lastPathComponent) + String(localized: " (factory)")
         }
-        return "Factory default"
+        return String(localized: "Factory default")
     }
 
     private static func profileDescription(_ url: URL) -> String? {

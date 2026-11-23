@@ -9,17 +9,14 @@ final class AppPresetPolicyTests: XCTestCase {
     private let externalTwo = "cgid:2"
 
     private func figmaPreset(target: Policy.Target = .allDisplays,
-                             brightness: Float? = 0.6, contrast: Float? = nil,
-                             colorPreset: Int? = nil) -> Policy.AppPreset {
+                             brightness: Float? = 0.6, contrast: Float? = nil) -> Policy.AppPreset {
         Policy.AppPreset(bundleIdentifier: "com.figma.Desktop", applicationName: "Figma",
-                         brightness: brightness, contrast: contrast, colorPreset: colorPreset,
-                         target: target)
+                         brightness: brightness, contrast: contrast, target: target)
     }
 
-    private func snapshot(_ recordID: String, brightness: Float? = nil, contrast: Float? = nil,
-                          colorPreset: Int? = nil) -> Policy.DisplaySnapshot {
-        Policy.DisplaySnapshot(recordID: recordID, brightness: brightness, contrast: contrast,
-                               colorPreset: colorPreset)
+    private func snapshot(_ recordID: String, brightness: Float? = nil,
+                          contrast: Float? = nil) -> Policy.DisplaySnapshot {
+        Policy.DisplaySnapshot(recordID: recordID, brightness: brightness, contrast: contrast)
     }
 
     /// Drives `resolve` twice at the same instant then once past the debounce window, threading the
@@ -50,15 +47,12 @@ final class AppPresetPolicyTests: XCTestCase {
     }
 
     func testActivationOnlyCapturesTheChannelsThePresetActuallyWrites() {
-        let preset = figmaPreset(brightness: 0.5, contrast: nil, colorPreset: 4)
+        let preset = figmaPreset(brightness: 0.5, contrast: nil)
         let decision = settle(frontmost: "com.figma.Desktop", presets: [preset],
-                              displays: [snapshot(externalOne, brightness: 0.8, contrast: 0.7,
-                                                  colorPreset: 1)],
+                              displays: [snapshot(externalOne, brightness: 0.8, contrast: 0.7)],
                               from: Policy.ActivationState())
-        XCTAssertEqual(decision.captures[externalOne],
-                       Policy.PriorState(brightness: 0.8, contrast: nil, colorPreset: 1))
-        XCTAssertEqual(decision.applyWrites,
-                       [Policy.DisplayWrite(recordID: externalOne, brightness: 0.5, colorPreset: 4)])
+        XCTAssertEqual(decision.captures[externalOne], Policy.PriorState(brightness: 0.8, contrast: nil))
+        XCTAssertEqual(decision.applyWrites, [Policy.DisplayWrite(recordID: externalOne, brightness: 0.5)])
     }
 
     // MARK: - Restore
@@ -236,15 +230,14 @@ final class AppPresetPolicyTests: XCTestCase {
 
     func testAppPresetRoundTripsThroughJSON() throws {
         let preset = Policy.AppPreset(bundleIdentifier: "com.figma.Desktop", applicationName: "Figma",
-                                      brightness: 0.6, contrast: 0.5, colorPreset: 4,
-                                      target: .display("cgid:1"))
+                                      brightness: 0.6, contrast: 0.5, target: .display("cgid:1"))
         let encoded = try JSONEncoder().encode(preset)
         let decoded = try JSONDecoder().decode(Policy.AppPreset.self, from: encoded)
         XCTAssertEqual(decoded, preset)
     }
 
     func testPriorStateRoundTripsThroughJSON() throws {
-        let prior = Policy.PriorState(brightness: 0.42, contrast: 0.73, colorPreset: 2)
+        let prior = Policy.PriorState(brightness: 0.42, contrast: 0.73)
         let encoded = try JSONEncoder().encode(prior)
         let decoded = try JSONDecoder().decode(Policy.PriorState.self, from: encoded)
         XCTAssertEqual(decoded, prior)
