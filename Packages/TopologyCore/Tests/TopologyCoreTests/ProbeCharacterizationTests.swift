@@ -31,6 +31,19 @@ final class ProbeCharacterizationTests: XCTestCase {
         XCTAssertEqual(v.z, orange[2], accuracy: 1e-6)
     }
 
+    func testPicksTheLeastCollinearChannels() throws {
+        // Channels 0–2 nearly collinear (they differ by a hair), channel 3 sees mostly X.
+        let fourChannel: [[Double]] = [[2.0, 9.0, 18.0], [2.1, 9.0, 18.0], [2.0, 9.1, 18.0], [21.0, 4.0, 1.0]]
+        let read = { (v: [Double]) in fourChannel.map { row in zip(row, v).reduce(0) { $0 + $1.0 * $1.1 } } }
+        let patches = srgb.map { c in ProbeCharacterization.Patch(red: c.0, green: c.1, blue: c.2, raw: read(xyz(c))) }
+        let fitted = try XCTUnwrap(ProbeCharacterization.characterize(patches, whiteY: 1, probeModel: "x", at: Date()))
+        XCTAssertTrue(fitted.channels.contains(3), "picked \(fitted.channels)")
+        let orange = xyz((1, 0.5, 0.1))
+        let v = try XCTUnwrap(fitted.xyz(raw: read(orange) + [1, 180]))  // extra diagnostics are ignored
+        XCTAssertEqual(v.x, orange[0], accuracy: 1e-6)
+        XCTAssertEqual(v.z, orange[2], accuracy: 1e-6)
+    }
+
     func testNeedsWhiteAndRawChannels() {
         let noWhite = srgb.dropFirst().map { c in ProbeCharacterization.Patch(red: c.0, green: c.1, blue: c.2, raw: raw(xyz(c))) }
         XCTAssertNil(ProbeCharacterization.characterize(Array(noWhite), whiteY: 1, probeModel: "x", at: Date()))
@@ -43,7 +56,7 @@ final class ProbeCharacterizationTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = SettingsStore(directory: directory)
-        let characterization = ProbeCharacterization(matrix: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], probeModel: "iPhone18,3",
+        let characterization = ProbeCharacterization(matrix: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], channels: [0, 2, 3], probeModel: "iPhone18,3",
                                                      measuredAt: Date(timeIntervalSince1970: 1_800_000_000), whiteCheckError: 0.002)
         try store.save(OpenDisplaySettings(probeCharacterization: characterization))
         XCTAssertEqual(store.load().probeCharacterization, characterization)

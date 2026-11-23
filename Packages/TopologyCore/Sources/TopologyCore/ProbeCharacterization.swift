@@ -1,7 +1,7 @@
 import Foundation
 
-/// An iPhone probe characterized on the MacBook's factory-calibrated screen: a 3×3 matrix from the
-/// phone's raw light-sensor channels 0–2 to CIE XYZ.
+/// An iPhone probe characterized on the MacBook's factory-calibrated screen: a 3×3 matrix from three
+/// of the phone's raw light-sensor channels to CIE XYZ.
 ///
 /// The phone firmware's own XYZ is neither accurate nor linear — it reads a D65 MacBook near 9,500 K,
 /// and a yellow patch's Z comes out 30 % above red's plus green's. The raw channels do add up
@@ -9,24 +9,31 @@ import Foundation
 /// method, with the MacBook standing in for the reference instrument. It is fitted on the MacBook's
 /// spectra; on a panel with very different primaries it is closer, not exact.
 public struct ProbeCharacterization: Hashable, Sendable, Codable {
-    /// Row-major: XYZ = matrix · (raw0, raw1, raw2).
+    /// Row-major: XYZ = matrix · (raw[channels[0]], raw[channels[1]], raw[channels[2]]).
     public var matrix: [[Double]]
+    /// The three raw channels used: the least collinear trio on the MacBook. A near-collinear trio
+    /// fits the MacBook just as well but blows small spectral differences up on any other panel
+    /// (iPhone 17: channels 0–2 read a monitor near 6,700 K as 3,500 K; 0, 2, 3 don't).
+    public var channels: [Int]
     /// The probe it belongs to (e.g. "iPhone18,3"); another phone needs its own.
     public var probeModel: String
     public var measuredAt: Date
     /// |Δx| + |Δy| when a fit that left the white patch out predicts it — the honesty check.
     public var whiteCheckError: Double
 
-    public init(matrix: [[Double]], probeModel: String, measuredAt: Date, whiteCheckError: Double) {
+    public init(matrix: [[Double]], channels: [Int] = [0, 1, 2], probeModel: String, measuredAt: Date,
+                whiteCheckError: Double) {
         self.matrix = matrix
+        self.channels = channels
         self.probeModel = probeModel
         self.measuredAt = measuredAt
         self.whiteCheckError = whiteCheckError
     }
 
     public func xyz(raw: [Double]) -> (x: Double, y: Double, z: Double)? {
-        guard raw.count >= 3, matrix.count == 3, matrix.allSatisfy({ $0.count == 3 }) else { return nil }
-        let v = matrix.map { row in zip(row, raw).reduce(0) { $0 + $1.0 * $1.1 } }
+        guard channels.count == 3, let last = channels.max(), raw.count > last, channels.min() ?? -1 >= 0,
+              matrix.count == 3, matrix.allSatisfy({ $0.count == 3 }) else { return nil }
+        let v = Self.multiply(matrix, channels.map { raw[$0] })
         return (v[0], v[1], v[2])
     }
 
@@ -46,21 +53,40 @@ public struct ProbeCharacterization: Hashable, Sendable, Codable {
     /// Nil without a white patch and at least three others, or when the patches don't span colour.
     public static func characterize(_ patches: [Patch], whiteY: Double, probeModel: String,
                                     at date: Date) -> ProbeCharacterization? {
-        let usable = patches.filter { $0.raw.count >= 3 }
+        let width = min(4, patches.map(\.raw.count).min() ?? 0)
+        guard width >= 3 else { return nil }
+        let trios = width == 4 ? [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]] : [[0, 1, 2]]
+        guard let channels = trios.max(by: { independence(patches, $0) < independence(patches, $1) }) else { return nil }
+        let usable = patches.map { patch in
+            Patch(red: patch.red, green: patch.green, blue: patch.blue, raw: channels.map { patch.raw[$0] })
+        }
         guard let white = usable.first(where: \.isWhite), usable.filter({ !$0.isWhite }).count >= 3,
               whiteY > 0, let matrix = fit(usable, scale: whiteY),
               let heldOut = fit(usable.filter { !$0.isWhite }, scale: whiteY) else { return nil }
-        let predicted = multiply(heldOut, Array(white.raw.prefix(3)))
+        let predicted = multiply(heldOut, white.raw)
         let sum = predicted.reduce(0, +)
         guard sum > 0 else { return nil }
         let truth = multiply(sRGBToXYZ, [1, 1, 1]), truthSum = truth.reduce(0, +)
         let error = abs(predicted[0] / sum - truth[0] / truthSum) + abs(predicted[1] / sum - truth[1] / truthSum)
-        return ProbeCharacterization(matrix: matrix, probeModel: probeModel, measuredAt: date, whiteCheckError: error)
+        return ProbeCharacterization(matrix: matrix, channels: channels, probeModel: probeModel, measuredAt: date,
+                                     whiteCheckError: error)
+    }
+
+    /// How far from collinear these channels are across the patches: the determinant of their Gram
+    /// matrix with each channel scaled to unit length — 1 for orthogonal, 0 for collinear.
+    private static func independence(_ patches: [Patch], _ channels: [Int]) -> Double {
+        let columns = channels.map { c in patches.map { $0.raw[c] } }
+        let norms = columns.map { sqrt($0.reduce(0) { $0 + $1 * $1 }) }
+        guard norms.allSatisfy({ $0 > 0 }) else { return 0 }
+        let gram = (0..<3).map { i in
+            (0..<3).map { j in zip(columns[i], columns[j]).reduce(0) { $0 + $1.0 * $1.1 } / (norms[i] * norms[j]) }
+        }
+        return determinant(gram)
     }
 
     /// Least squares: the 3×3 M minimising Σ‖M·raw − truth‖², via the normal equations.
     private static func fit(_ patches: [Patch], scale: Double) -> [[Double]]? {
-        let raw = patches.map { Array($0.raw.prefix(3)) }
+        let raw = patches.map(\.raw)
         let truth = patches.map { patch in multiply(sRGBToXYZ, [patch.red, patch.green, patch.blue].map(linear)).map { $0 * scale } }
         let gram = (0..<3).map { i in (0..<3).map { j in raw.reduce(0) { $0 + $1[i] * $1[j] } } }
         guard let inverseGram = inverse(gram) else { return nil }
@@ -90,9 +116,15 @@ public struct ProbeCharacterization: Hashable, Sendable, Codable {
                 return m[r[0]][c[0]] * m[r[1]][c[1]] - m[r[0]][c[1]] * m[r[1]][c[0]]
             }
         }
-        let determinant = (0..<3).reduce(0) { $0 + m[0][$1] * cofactors[0][$1] }
-        guard abs(determinant) > 1e-12 * pow(m.flatMap { $0 }.map(abs).max() ?? 1, 3) else { return nil }
-        return (0..<3).map { row in (0..<3).map { column in cofactors[column][row] / determinant } }
+        let det = (0..<3).reduce(0) { $0 + m[0][$1] * cofactors[0][$1] }
+        guard abs(det) > 1e-12 * pow(m.flatMap { $0 }.map(abs).max() ?? 1, 3) else { return nil }
+        return (0..<3).map { row in (0..<3).map { column in cofactors[column][row] / det } }
+    }
+
+    private static func determinant(_ m: [[Double]]) -> Double {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
     }
 
     private static func multiply(_ matrix: [[Double]], _ vector: [Double]) -> [Double] {

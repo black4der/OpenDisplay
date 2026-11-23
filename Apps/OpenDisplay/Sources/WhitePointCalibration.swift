@@ -365,8 +365,9 @@ private struct MainActorCallback: @unchecked Sendable {
         func raw(_ phase: String) -> [Double]? {
             let channels = record.measurements.last { $0.request.phase == phase }?.samples.map(\.channels)
                 .filter { $0.count >= 3 } ?? []
-            guard !channels.isEmpty else { return nil }
-            return (0..<3).map { i in channels.reduce(0) { $0 + $1[i] } / Double(channels.count) }
+            // Raw channels 0–3 (the probe appends diagnostics after them); older probes send fewer.
+            guard let width = channels.map({ min(4, $0.count) }).min() else { return nil }
+            return (0..<width).map { i in channels.reduce(0) { $0 + $1[i] } / Double(channels.count) }
         }
         guard let probe, let black = raw("black") else { return nil }
         let patches = CalibrationPatch.sequence.filter { $0.name != "black" }.compactMap { patch in
