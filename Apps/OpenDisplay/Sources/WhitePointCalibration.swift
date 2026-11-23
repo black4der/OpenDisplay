@@ -32,7 +32,10 @@ private struct MainActorCallback: @unchecked Sendable {
 
 /// TCP on the probe port, advertised as `_d65._tcp` over Bonjour, peer-to-peer allowed.
 @MainActor final class ProbeNetworkListener: ProbeListener {
-    private let listener: NWListener
+    private var listener: NWListener
+    private let port: NWEndpoint.Port
+    private var retries = 0
+    private var cancelled = false
     private var onReady: (() -> Void)?
     private var onFailure: ((String) -> Void)?
     private var onConnection: ((any ProbeConnection) -> Void)?
@@ -41,10 +44,16 @@ private struct MainActorCallback: @unchecked Sendable {
 
     init(port: UInt16 = 50515) throws {
         guard let endpoint = NWEndpoint.Port(rawValue: port) else { throw CalibrationError.invalidConfiguration }
+        self.port = endpoint
+        listener = try Self.makeListener(on: endpoint)
+    }
+
+    private static func makeListener(on port: NWEndpoint.Port) throws -> NWListener {
         let parameters = NWParameters.tcp
         parameters.includePeerToPeer = true
-        listener = try NWListener(using: parameters, on: endpoint)
+        let listener = try NWListener(using: parameters, on: port)
         listener.service = NWListener.Service(name: "OpenDisplay", type: Link.serviceType)
+        return listener
     }
 
     func start(onReady: @escaping () -> Void, onFailure: @escaping (String) -> Void,
@@ -52,6 +61,10 @@ private struct MainActorCallback: @unchecked Sendable {
         self.onReady = onReady
         self.onFailure = onFailure
         self.onConnection = onConnection
+        listen()
+    }
+
+    private func listen() {
         listener.newConnectionHandler = { [weak self] connection in
             Task { @MainActor in
                 guard let self else { return }
@@ -62,13 +75,23 @@ private struct MainActorCallback: @unchecked Sendable {
         }
         listener.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
+                guard let self else { return }
                 switch state {
-                case .ready: self?.onReady?()
+                case .ready: self.onReady?()
                 case .failed(let error):
                     if case .posix(let code) = error, code == .EADDRINUSE {
-                        self?.onFailure?(String(localized: "The probe port is in use, possibly by d65 itself. Quit it and try again."))
+                        // The session closed a moment ago releases the port asynchronously; wait it out (~3 s).
+                        if self.retries < 10, !self.cancelled, let next = try? Self.makeListener(on: self.port) {
+                            self.retries += 1
+                            self.listener.cancel()
+                            self.listener = next
+                            try? await Task.sleep(for: .milliseconds(300))
+                            if !self.cancelled { self.listen() }
+                            return
+                        }
+                        self.onFailure?(String(localized: "The probe port is in use, possibly by d65 itself. Quit it and try again."))
                     } else {
-                        self?.onFailure?(String(localized: "OpenDisplay can’t listen on the local network: \(String(describing: error))"))
+                        self.onFailure?(String(localized: "OpenDisplay can’t listen on the local network: \(String(describing: error))"))
                     }
                 default: break
                 }
@@ -77,7 +100,7 @@ private struct MainActorCallback: @unchecked Sendable {
         listener.start(queue: .main)
     }
 
-    func cancel() { listener.cancel() }
+    func cancel() { cancelled = true; listener.cancel() }
 }
 
 /// One probe's TCP connection.
