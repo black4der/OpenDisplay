@@ -408,6 +408,7 @@ final class AppModel: ObservableObject {
             reconcileAppPresetObserver()  // observe the frontmost app if App Presets is enabled
             #endif
             autoDisconnectPolicy.seed(externalPresent: hasExternalDisplay)  // don't treat a pre-attached external as an arrival
+            await maintainIgnoredBuiltIn()  // relaunched after unplugging while ignored: relight the built-in
             await evaluateLayoutProtection(trigger: .launch)  // Batch-4 #A: check the launch arrangement
             await writeBaselineCheckpoint()
             if let marker = Self.readRotationMarker() {
@@ -2603,9 +2604,7 @@ final class AppModel: ObservableObject {
     /// rather than a nil placeholder. No-op when the frontmost app has no preset (a restore reads only
     /// the ledger).
     private func primeAppPresetCaches(frontmostBundleID: String?) async {
-        guard let incoming = settings.appPresets.first(where: {
-            $0.bundleIdentifier == frontmostBundleID
-        }) else { return }
+        guard settings.appPresets.contains(where: { $0.bundleIdentifier == frontmostBundleID }) else { return }
         for observation in displays where observation.displayClass != .builtIn && observation.isActive {
             let id = observation.recordID
             if brightnessMethod[id] == nil { await refreshBrightness(for: observation) }
@@ -3342,7 +3341,8 @@ final class AppModel: ObservableObject {
             reconcileAppPresetObserver()  // and start/stop the frontmost-app observer to match
             evaluateAppPresets()  // govern a newly-arrived external (or release a departed one)
             #endif
-            let autoDisconnected = await applyAutoDisconnectBuiltInIfNeeded()  // external arrived → built-in off
+            let autoDisconnected = await applyAutoDisconnectBuiltInIfNeeded()  // external arrived → ignore built-in
+            await maintainIgnoredBuiltIn()  // keep it parked, or give its light back once externals are gone
             postDisplayNotifications(prior: prior, builtInAutoDisconnected: autoDisconnected)  // Batch-2 #5
             // The externals coming back is the event the wake re-assert has been waiting for: only
             // now is there a screen to take over from the display macOS relit.
@@ -3386,27 +3386,104 @@ final class AppModel: ObservableObject {
     @discardableResult
     private func applyAutoDisconnectBuiltInIfNeeded() async -> Bool {
         let fire = autoDisconnectPolicy.onTopologyChange(
-            enabled: settings.autoDisconnectBuiltInOnExternal,
+            enabled: settings.ignoreBuiltInOnExternal,
             externalPresent: hasExternalDisplay
         )
         guard fire, !busy, sessionGate.permitsAutomaticDisplayActions,
               let builtIn = displays.first(where: { $0.displayClass == .builtIn && $0.isActive })
         else { return false }
-        #if DEBUG
-        Self.err("AUTO-DISCONNECT firing: turning off \(displayName(for: builtIn))")
-        #endif
-        let committed = await setDisplayActive(false, for: builtIn, as: .system)
+        let committed = await ignoreBuiltIn(builtIn)
         await appendAudit(AutoDisconnectBuiltInPolicy.auditEntry(
             builtIn: builtIn.recordID, committed: committed, at: Date()))
         return true
     }
 
-    /// Toggle for "auto-disconnect the built-in when an external connects" (Issue 5). Persists the
-    /// setting; takes effect on the next external arrival (it never disconnects retroactively).
-    func setAutoDisconnectBuiltInOnExternal(_ enabled: Bool) {
-        guard settings.autoDisconnectBuiltInOnExternal != enabled else { return }
-        settings.autoDisconnectBuiltInOnExternal = enabled
+    /// Steps the built-in aside without disconnecting it — it stays active, so macOS's own True Tone
+    /// keeps reaching the externals: backlight to 0, parked at a corner the pointer can't cross. The
+    /// ledger (brightness + origin) is written first, so a crash still owes the panel its light back,
+    /// and an external becomes main first — the menu bar must never sit on a dark panel.
+    private func ignoreBuiltIn(_ builtIn: DisplayObservation) async -> Bool {
+        guard let cgID = builtIn.cgDisplayID else { return false }
+        if settings.ignoredBuiltIn == nil {
+            #if PUBLIC_API_ONLY
+            let level = brightness[builtIn.recordID] ?? 1
+            #else
+            let control = brightnessControl
+            let level = await Task.detached(priority: .userInitiated) { control.brightness(for: cgID) }.value
+                ?? brightness[builtIn.recordID] ?? 1
+            #endif
+            settings.ignoredBuiltIn = IgnoredBuiltInState(
+                brightness: level, originX: builtIn.origin.x, originY: builtIn.origin.y)
+            persistSettings()
+        }
+        if builtIn.isMain, let external = displays.first(where: { $0.displayClass != .builtIn && $0.isActive }) {
+            await setMain(for: external)
+        }
+        await parkIgnoredBuiltIn()
+        return true
+    }
+
+    /// On every topology change: while an external is connected, keep an ignored built-in dark and
+    /// parked (a reconfiguration or wake can re-snap or relight it); once none is, give it its light back.
+    private func maintainIgnoredBuiltIn() async {
+        guard let ledger = settings.ignoredBuiltIn else { return }
+        if hasExternalDisplay {
+            await parkIgnoredBuiltIn()
+        } else {
+            restoreIgnoredBuiltIn(ledger, origin: false)
+        }
+    }
+
+    /// Backlight to 0 and move to `AutoDisconnectBuiltInPolicy.parkedOrigin` — a single-corner contact
+    /// off the externals' bottom-right — unless it is already there.
+    private func parkIgnoredBuiltIn() async {
+        guard let builtIn = displays.first(where: { $0.displayClass == .builtIn && $0.isActive }),
+              let cgID = builtIn.cgDisplayID else { return }
+        #if !PUBLIC_API_ONLY
+        writeNativeBrightness(0, for: builtIn)
+        #endif
+        brightness[builtIn.recordID] = 0
+        let externals = displays.filter { $0.displayClass != .builtIn && $0.isActive }
+            .compactMap(\.cgDisplayID).map(CGDisplayBounds)
+        guard let target = AutoDisconnectBuiltInPolicy.parkedOrigin(externals: externals) else { return }
+        let origin = DisplayOrigin(x: Int(target.x), y: Int(target.y))
+        guard builtIn.origin.x != origin.x || builtIn.origin.y != origin.y else { return }
+        _ = observer.applyArrangement([.init(displayID: cgID, origin: origin, mode: nil)])
+        await refresh()
+    }
+
+    /// Gives the built-in back what the ledger holds — its brightness (never darker than a usable
+    /// floor) and, when externals are still there to sit beside, its origin — then clears the ledger.
+    /// A built-in that isn't active right now keeps the ledger for next time.
+    private func restoreIgnoredBuiltIn(_ ledger: IgnoredBuiltInState, origin restoreOrigin: Bool) {
+        guard let builtIn = displays.first(where: { $0.displayClass == .builtIn && $0.isActive }) else { return }
+        let level = AutoDisconnectBuiltInPolicy.restoredBrightness(from: ledger.brightness)
+        #if !PUBLIC_API_ONLY
+        writeNativeBrightness(level, for: builtIn)
+        #endif
+        brightness[builtIn.recordID] = level
+        if restoreOrigin, let cgID = builtIn.cgDisplayID {
+            let origin = DisplayOrigin(x: ledger.originX, y: ledger.originY)
+            _ = observer.applyArrangement([.init(displayID: cgID, origin: origin, mode: nil)])
+        }
+        settings.ignoredBuiltIn = nil
         persistSettings()
+    }
+
+    /// Toggle for "ignore the built-in when an external connects" (Issue 5). Turning it on applies
+    /// right away when an external is already connected (it's non-destructive); turning it off gives
+    /// the built-in its brightness and position back.
+    func setIgnoreBuiltInOnExternal(_ enabled: Bool) {
+        guard settings.ignoreBuiltInOnExternal != enabled else { return }
+        settings.ignoreBuiltInOnExternal = enabled
+        persistSettings()
+        if enabled, hasExternalDisplay,
+           let builtIn = displays.first(where: { $0.displayClass == .builtIn && $0.isActive }) {
+            Task { [weak self] in _ = await self?.ignoreBuiltIn(builtIn) }
+        } else if !enabled, let ledger = settings.ignoredBuiltIn {
+            restoreIgnoredBuiltIn(ledger, origin: true)
+            Task { [weak self] in await self?.refresh() }
+        }
     }
 
     /// Toggle for "prevent display sleep while an external is connected" (Issue 3). Persists the

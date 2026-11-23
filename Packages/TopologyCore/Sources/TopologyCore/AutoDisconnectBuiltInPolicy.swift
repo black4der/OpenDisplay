@@ -1,14 +1,15 @@
 import DisplayDomain
 import Foundation
 
-/// Edge-triggered policy for "auto-disconnect the built-in panel when an external connects" (Issue 5)
-/// — the project's original use case, made automatic.
+/// Edge-triggered policy for "ignore the built-in panel when an external connects" (Issue 5).
 ///
 /// It fires only on the **rising edge** of external presence (none → some): the moment the first
-/// external arrives is when the built-in should turn off. Plugging in a *second* external (some →
-/// more) leaves presence "some", so no new edge fires and the built-in isn't disturbed again. Pure
-/// decision logic — actually turning the built-in off (through the gated coordinator) and bringing it
-/// back when the last external leaves (the existing always-one-active safety net) are the host's job.
+/// external arrives is when the built-in should step aside. Plugging in a *second* external (some →
+/// more) leaves presence "some", so no new edge fires and the built-in isn't disturbed again.
+///
+/// "Ignore" deliberately does NOT disconnect the panel: it stays active, so macOS's own True Tone
+/// keeps reaching the externals, but its backlight goes to 0 and it is parked where the pointer can't
+/// reach (`parkedOrigin`). Pure decision logic — the dimming, parking and restoring are the host's job.
 public struct AutoDisconnectBuiltInPolicy {
     private var externalPresent: Bool
 
@@ -32,6 +33,27 @@ public struct AutoDisconnectBuiltInPolicy {
         return enabled && arrived
     }
 
+    /// Where to park the built-in so the pointer can't reach it: touching the externals at a single
+    /// corner only — the bottom-right one of the right-most (then lowest) external. Displays that meet
+    /// at one point share no edge, so the cursor can't cross, and Core Graphics keeps the layout as
+    /// given (measured on macOS 26) instead of snapping it to an edge. Global Core Graphics
+    /// coordinates, y growing downward. Nil when there are no externals.
+    public static func parkedOrigin(externals: [CGRect]) -> CGPoint? {
+        // origin + size rather than maxX/maxY: those come from CoreGraphics, absent on Linux.
+        func corner(_ rect: CGRect) -> (CGFloat, CGFloat) {
+            (rect.origin.x + rect.size.width, rect.origin.y + rect.size.height)
+        }
+        guard let anchor = externals.max(by: { corner($0) < corner($1) }) else { return nil }
+        let point = corner(anchor)
+        return CGPoint(x: point.0, y: point.1)
+    }
+
+    /// The brightness to give the built-in back. A panel that was already dark (a desk setup often
+    /// keeps it at 0) comes back at a usable floor, so an undocked laptop is never left black.
+    public static func restoredBrightness(from prior: Float) -> Float {
+        max(prior, 0.4)
+    }
+
     /// Command recorded when the policy fires. On a wake the external's re-arrival edge can fire
     /// this before the wake re-assert gets its turn, so an unaudited firing reads as the re-assert
     /// acting silently — the exact confusion the entry exists to prevent.
@@ -45,5 +67,18 @@ public struct AutoDisconnectBuiltInPolicy {
                    transactionId: "txn_\(auditCommand)",
                    status: committed ? "committed" : "failed",
                    targets: [builtIn.rawValue])
+    }
+}
+
+/// Restore ledger for an ignored built-in: what it looked like before it was dimmed and parked.
+public struct IgnoredBuiltInState: Hashable, Sendable, Codable {
+    public var brightness: Float
+    public var originX: Int
+    public var originY: Int
+
+    public init(brightness: Float, originX: Int, originY: Int) {
+        self.brightness = brightness
+        self.originX = originX
+        self.originY = originY
     }
 }

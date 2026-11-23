@@ -81,4 +81,21 @@ final class AutoDisconnectBuiltInPolicyTests: XCTestCase {
             builtIn: DisplayRecordID(rawValue: "builtin"), committed: false, at: now).status,
                        "failed")
     }
+
+    func testParksAtTheBottomRightCornerOfTheRightmostExternal() {
+        // Two externals side by side, as on the desk this was measured on.
+        let sideBySide = [CGRect(x: 0, y: 0, width: 2304, height: 1296),
+                          CGRect(x: 2304, y: 6, width: 2304, height: 1296)]
+        XCTAssertEqual(AutoDisconnectBuiltInPolicy.parkedOrigin(externals: sideBySide), CGPoint(x: 4608, y: 1302))
+        // Stacked with a shared right edge: anchor on the lower one, or the built-in would share an
+        // edge with it and the pointer could cross.
+        let stacked = [CGRect(x: 0, y: 0, width: 100, height: 100), CGRect(x: 0, y: 100, width: 100, height: 100)]
+        XCTAssertEqual(AutoDisconnectBuiltInPolicy.parkedOrigin(externals: stacked), CGPoint(x: 100, y: 200))
+        XCTAssertNil(AutoDisconnectBuiltInPolicy.parkedOrigin(externals: []))
+    }
+
+    func testADarkPanelComesBackAtAUsableBrightness() {
+        XCTAssertEqual(AutoDisconnectBuiltInPolicy.restoredBrightness(from: 0), 0.4)
+        XCTAssertEqual(AutoDisconnectBuiltInPolicy.restoredBrightness(from: 0.75), 0.75)
+    }
 }

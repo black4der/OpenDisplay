@@ -362,15 +362,22 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(SettingsStore(directory: directory).load().arrangementAutoRevertSeconds, 10)
     }
 
-    func testAutoDisconnectBuiltInDefaultsOffAndRoundTrips() throws {
-        XCTAssertFalse(OpenDisplaySettings.default.autoDisconnectBuiltInOnExternal)
+    func testIgnoreBuiltInDefaultsOffAndRoundTrips() throws {
+        XCTAssertFalse(OpenDisplaySettings.default.ignoreBuiltInOnExternal)
+        XCTAssertNil(OpenDisplaySettings.default.ignoredBuiltIn)
         let store = SettingsStore(directory: directory)
-        try store.save(OpenDisplaySettings(autoDisconnectBuiltInOnExternal: true))
-        XCTAssertTrue(store.load().autoDisconnectBuiltInOnExternal)
+        let ledger = IgnoredBuiltInState(brightness: 0.6, originX: -1728, originY: 90)
+        try store.save(OpenDisplaySettings(ignoreBuiltInOnExternal: true, ignoredBuiltIn: ledger))
+        XCTAssertTrue(store.load().ignoreBuiltInOnExternal)
+        XCTAssertEqual(store.load().ignoredBuiltIn, ledger)
         // Missing key in an older file defaults off.
         try Data(#"{"persistencePolicy":"reconnectOnQuit"}"#.utf8)
             .write(to: directory.appendingPathComponent("settings.json"))
-        XCTAssertFalse(SettingsStore(directory: directory).load().autoDisconnectBuiltInOnExternal)
+        XCTAssertFalse(SettingsStore(directory: directory).load().ignoreBuiltInOnExternal)
+        // The old "turn the built-in off" key carries over to the setting that replaced it.
+        try Data(#"{"autoDisconnectBuiltInOnExternal":true}"#.utf8)
+            .write(to: directory.appendingPathComponent("settings.json"))
+        XCTAssertTrue(SettingsStore(directory: directory).load().ignoreBuiltInOnExternal)
     }
 
     func testMediaKeyAndOSDDefaultsAndRoundTrip() throws {

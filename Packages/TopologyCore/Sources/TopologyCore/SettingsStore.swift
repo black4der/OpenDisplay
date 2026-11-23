@@ -14,10 +14,16 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
     /// When on, hold a "prevent display idle-sleep" power assertion while ≥1 external display is
     /// present, so the Mac doesn't dim/sleep its screens during a presentation or always-on setup.
     public var preventDisplaySleepWithExternal: Bool
-    /// When on, turn the built-in panel off automatically the moment an external display arrives
-    /// (Issue 5 — the clamshell-style original use case). The built-in returns when the last external
-    /// leaves (via the always-one-active safety net).
-    public var autoDisconnectBuiltInOnExternal: Bool
+    /// When on, the built-in panel steps aside the moment an external display arrives (Issue 5):
+    /// it stays connected (macOS's own True Tone keeps reaching the externals) but goes dark and is
+    /// parked at a corner the pointer can't cross. Stored under its original key, from when this
+    /// disconnected the panel, so the user's choice carries over.
+    public var ignoreBuiltInOnExternal: Bool
+    /// Restore ledger for the ignored built-in: present while it is dark and parked, holding its
+    /// brightness and origin from before. Persisted before dimming, so a crash can't leave the laptop
+    /// panel dark with nothing to restore it; cleared once the last external leaves or the setting
+    /// is turned off.
+    public var ignoredBuiltIn: IgnoredBuiltInState?
     /// Seconds the "Keep these display settings?" prompt waits before auto-reverting a
     /// resolution/mirror/set-main change (Issue 6). Floored at 3 by the app.
     public var arrangementAutoRevertSeconds: Int
@@ -148,7 +154,8 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         confirmationCountdownSeconds: Int = 5,
         reconnectAllHotkeyEnabled: Bool = true,
         preventDisplaySleepWithExternal: Bool = false,
-        autoDisconnectBuiltInOnExternal: Bool = false,
+        ignoreBuiltInOnExternal: Bool = false,
+        ignoredBuiltIn: IgnoredBuiltInState? = nil,
         arrangementAutoRevertSeconds: Int = 10,
         hotkeyShortcuts: KeyboardShortcutRegistry = .defaults,
         displayNotificationsEnabled: Bool = false,
@@ -191,7 +198,8 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         self.confirmationCountdownSeconds = confirmationCountdownSeconds
         self.reconnectAllHotkeyEnabled = reconnectAllHotkeyEnabled
         self.preventDisplaySleepWithExternal = preventDisplaySleepWithExternal
-        self.autoDisconnectBuiltInOnExternal = autoDisconnectBuiltInOnExternal
+        self.ignoreBuiltInOnExternal = ignoreBuiltInOnExternal
+        self.ignoredBuiltIn = ignoredBuiltIn
         self.arrangementAutoRevertSeconds = arrangementAutoRevertSeconds
         self.hotkeyShortcuts = hotkeyShortcuts
         self.displayNotificationsEnabled = displayNotificationsEnabled
@@ -239,7 +247,8 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
     private enum CodingKeys: String, CodingKey {
         case persistencePolicy, confirmationCountdownSeconds, reconnectAllHotkeyEnabled
         case preventDisplaySleepWithExternal
-        case autoDisconnectBuiltInOnExternal
+        case ignoreBuiltInOnExternal = "autoDisconnectBuiltInOnExternal"
+        case ignoredBuiltIn
         case arrangementAutoRevertSeconds
         case hotkeyShortcuts
         case displayNotificationsEnabled
@@ -296,8 +305,10 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
             ?? defaults.reconnectAllHotkeyEnabled
         preventDisplaySleepWithExternal = container.lenient(Bool.self, forKey: .preventDisplaySleepWithExternal)
             ?? defaults.preventDisplaySleepWithExternal
-        autoDisconnectBuiltInOnExternal = container.lenient(Bool.self, forKey: .autoDisconnectBuiltInOnExternal)
-            ?? defaults.autoDisconnectBuiltInOnExternal
+        ignoreBuiltInOnExternal = container.lenient(Bool.self, forKey: .ignoreBuiltInOnExternal)
+            ?? defaults.ignoreBuiltInOnExternal
+        ignoredBuiltIn = container.lenient(IgnoredBuiltInState.self, forKey: .ignoredBuiltIn)
+            ?? defaults.ignoredBuiltIn
         arrangementAutoRevertSeconds = container.lenient(Int.self, forKey: .arrangementAutoRevertSeconds)
             ?? defaults.arrangementAutoRevertSeconds
         hotkeyShortcuts = container.lenient(KeyboardShortcutRegistry.self, forKey: .hotkeyShortcuts)

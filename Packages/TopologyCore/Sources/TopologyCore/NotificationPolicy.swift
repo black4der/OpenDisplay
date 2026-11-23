@@ -43,8 +43,8 @@ public enum NotificationPolicy {
         }
         if builtInAutoDisconnected {
             result.append(DisplayNotification(
-                title: "Built-in display turned off",
-                body: "Turned off automatically because an external display connected."
+                title: "Built-in display ignored",
+                body: "Dimmed and moved out of the pointer’s way because an external display connected."
             ))
         }
         return result

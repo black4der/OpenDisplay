@@ -13,7 +13,6 @@
 "Quit OpenDisplay — reconnects any displays it turned off" = "退出 OpenDisplay — 会重新连接它关闭的所有显示器";
 "More options" = "更多选项";
 "Keep displays awake while external connected" = "连接外接显示器时保持唤醒";
-"Turn built-in off when an external connects" = "连接外接显示器时关闭内建显示器";
 "Scanning displays…" = "正在扫描显示器…";
 "Scanning…" = "正在扫描…";
 "No displays detected" = "未检测到显示器";
@@ -203,8 +202,6 @@
 "Couldn’t change the login item: %@" = "无法更改登录项：%@";
 "Keep displays awake while an external is connected" = "连接外接显示器时保持显示器唤醒";
 "Holds a system “prevent display sleep” assertion whenever at least one external display is present, so the screens don’t idle-dim during a presentation or always-on setup. Released automatically when the last external is disconnected." = "只要连接了至少一台外接显示器，就保持系统“阻止显示器睡眠”断言，避免在演示或常亮场景中屏幕因闲置而变暗。最后一台外接显示器断开后自动释放。";
-"Turn the built-in display off when an external connects" = "连接外接显示器时关闭内建显示器";
-"When an external display arrives, the built-in panel is turned off automatically (through the same safety-checked path as a manual disconnect). It comes back on its own when the last external is unplugged. A second external doesn’t change anything." = "接入外接显示器时，会自动关闭内建屏幕（与手动断开走同一条经过安全检查的路径）。拔下最后一台外接显示器后，内建屏幕会自动重新开启。接入第二台外接显示器不会有任何变化。";
 "Notify on display connect / disconnect" = "显示器连接 / 断开时通知";
 "Posts a system notification when an external display is connected or disconnected, and when the built-in is auto-disconnected. Asks for notification permission the first time you turn this on." = "在外接显示器连接或断开、以及内建显示器被自动断开时发送系统通知。首次开启时会请求通知权限。";
 "Check for updates automatically" = "自动检查更新";
@@ -336,8 +333,6 @@
 "Brightness control isn't available in this build." = "此版本不支持亮度控制。";
 "Display connected" = "显示器已连接";
 "Display disconnected" = "显示器已断开";
-"Built-in display turned off" = "内建显示器已关闭";
-"Turned off automatically because an external display connected." = "由于连接了外接显示器，已自动关闭。";
 "XDR Brightness turned off" = "XDR 亮度已关闭";
 "Now running on battery power." = "现在正使用电池供电。";
 "Low Power Mode is on." = "低电量模式已开启。";
@@ -349,3 +344,8 @@
 "When a chosen app becomes frontmost, its display’s brightness — and optionally contrast — switch to the values you set, and restore when the app leaves. Changes are silent (no HUD) and pause Adaptive Display on those displays while the preset is active." = "当所选应用切换到最前面时，其显示器的亮度（以及可选的对比度）会切换为你设置的值，应用离开时再恢复。变化是静默的（不显示 HUD），并且预设生效期间会暂停这些显示器上的自适应显示。";
 "Auto-brightness reads the Mac’s ambient light sensor while the lid is open, whether or not the built-in display is on. With the lid closed it follows Location Mode when that is on, otherwise this schedule (day/night levels, ramped)." = "自动调节亮度在开盖时读取 Mac 的环境光传感器，无论内建显示器是否开启。合盖时，如果开启了位置模式就跟随位置模式，否则使用此计划（白天/夜间亮度，渐变过渡）。";
 "Drives brightness from the sun’s elevation at the location set below — dim near dawn/dusk, full once the sun is well up. A better lid-closed fallback than the flat schedule; the ambient light sensor still takes priority while it can be read, and Clock Mode’s explicit schedule always wins." = "根据下方所设位置的太阳高度角调节亮度 — 黎明/黄昏时偏暗，太阳升高后全亮。作为合盖时的后备方案比固定计划更好；能读取环境光传感器时仍以它为准，而“时钟模式”的明确计划始终优先。";
+"Ignore built-in when an external connects" = "连接外接显示器时忽略内建显示器";
+"Ignore the built-in display when an external connects" = "连接外接显示器时忽略内建显示器";
+"The built-in stays connected, so macOS’s own True Tone keeps working on the externals, but its brightness goes to 0 and it moves to a corner the pointer can’t reach. Its brightness comes back when the last external is unplugged. Turning this on applies it right away." = "内建显示器保持连接，macOS 自带的原彩显示会继续作用到外接显示器；但它的亮度调到 0，并移到鼠标去不了的角落。拔掉最后一台外接显示器时恢复亮度。打开后立即生效。";
+"Built-in display ignored" = "已忽略内建显示器";
+"Dimmed and moved out of the pointer’s way because an external display connected." = "由于连接了外接显示器，内建显示器已调暗并移到鼠标去不了的位置。";

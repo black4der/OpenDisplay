@@ -54,8 +54,8 @@ final class NotificationPolicyTests: XCTestCase {
             current: [obs("B")],
             names: names(["A": "Built-in", "B": "Desk"]),
             builtInAutoDisconnected: true, enabled: true)
-        XCTAssertEqual(n, [.init(title: "Built-in display turned off",
-                                 body: "Turned off automatically because an external display connected.")])
+        XCTAssertEqual(n, [.init(title: "Built-in display ignored",
+                                 body: "Dimmed and moved out of the pointer’s way because an external display connected.")])
     }
 
     func testNameFallbackWhenUnknown() {

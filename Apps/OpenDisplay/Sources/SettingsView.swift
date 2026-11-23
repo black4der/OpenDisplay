@@ -414,15 +414,15 @@ private struct HealthSection: View {
                     }
                 }
                 Toggle(isOn: Binding(
-                    get: { model.settings.autoDisconnectBuiltInOnExternal },
-                    set: { model.setAutoDisconnectBuiltInOnExternal($0) }
+                    get: { model.settings.ignoreBuiltInOnExternal },
+                    set: { model.setIgnoreBuiltInOnExternal($0) }
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Turn the built-in display off when an external connects")
-                        Text(LocalizedStringKey("When an external display arrives, the built-in panel is turned off automatically "
-                             + "(through the same safety-checked path as a manual disconnect). It comes back on "
-                             + "its own when the last external is unplugged. A second external doesn\u{2019}t change "
-                             + "anything."))
+                        Text("Ignore the built-in display when an external connects")
+                        Text(LocalizedStringKey("The built-in stays connected, so macOS\u{2019}s own True Tone keeps working on the "
+                             + "externals, but its brightness goes to 0 and it moves to a corner the pointer "
+                             + "can\u{2019}t reach. Its brightness comes back when the last external is unplugged. "
+                             + "Turning this on applies it right away."))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }

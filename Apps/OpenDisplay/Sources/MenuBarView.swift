@@ -82,9 +82,9 @@ struct MenuBarView: View {
                     get: { model.settings.preventDisplaySleepWithExternal },
                     set: { model.setPreventDisplaySleepWithExternal($0) }
                 ))
-                Toggle("Turn built-in off when an external connects", isOn: Binding(
-                    get: { model.settings.autoDisconnectBuiltInOnExternal },
-                    set: { model.setAutoDisconnectBuiltInOnExternal($0) }
+                Toggle("Ignore built-in when an external connects", isOn: Binding(
+                    get: { model.settings.ignoreBuiltInOnExternal },
+                    set: { model.setIgnoreBuiltInOnExternal($0) }
                 ))
                 Divider()
                 Button("About OpenDisplay") {
