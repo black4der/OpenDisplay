@@ -70,7 +70,8 @@ public enum ColorTemperatureCurve {
 
 
 /// A kept white-point calibration for one display, measured with an iPhone probe (d65): per-channel
-/// multipliers on the encoded gamma ramp, each 0...1 with the largest at 1, so highlights never clip.
+/// multipliers on the encoded gamma ramp, each 0...1, so highlights never clip. d65 doesn't pin the
+/// largest at 1 — its verify passes trade a little luminance for accuracy (a TCL R27U91 kept G 0.93).
 /// Applied through the same software-gamma composition as dimming and colour temperature.
 public struct DisplayCalibration: Hashable, Sendable, Codable {
     public var red: Float
