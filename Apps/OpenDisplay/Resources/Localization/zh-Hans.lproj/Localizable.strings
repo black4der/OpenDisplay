@@ -368,10 +368,10 @@
 "Press the iPhone face-down inside the outline on the display and hold it still." = "把 iPhone 屏幕朝下，贴在显示器上的手机轮廓里，保持不动。";
 "Measuring starts on its own once the phone has been still for a moment." = "手机稳定片刻后会自动开始测量。";
 "Waiting for the phone on the outline" = "等待手机放到轮廓里";
-"Too dark — the sensor must sit inside the outline" = "太暗了 — 传感器要放在轮廓里";
-"Hold the phone still" = "请保持手机不动";
+"Too dark — the sensor must sit inside the outline" = "太暗了 — 传感器要落在亮块里";
+"Hold the phone still" = "请拿稳手机";
 "Hold still…" = "保持不动…";
-"Starting" = "即将开始";
+"Starting" = "开始";
 "Measuring patch %lld of %lld" = "正在测量第 %1$lld / %2$lld 块";
 "Verifying the corrected white · pass %lld" = "正在验证校正后的白点 · 第 %lld 轮";
 "Keep the iPhone still until it finishes." = "完成前请保持 iPhone 不动。";
@@ -414,3 +414,8 @@
 "4. Tilt the MacBook screen back a little and press the iPhone face-down on it when the outline appears; hold it steady." = "4. 把 MacBook 屏幕往后仰一些，轮廓出现后把 iPhone 屏幕朝下贴上去，保持稳定。";
 "Getting any closer would dim the display by more than 20 %, so it stopped at the best measured pass." = "再往前校正会让显示器变暗超过 20%，所以停在测得最好的那一轮。";
 "A MacBook screen is close to 6500 K with True Tone and Night Shift off. A reading this far off usually means the phone misreads this panel, and matching to it would tint the externals the same way." = "关闭原彩显示和夜览后，MacBook 屏应接近 6500 K。读数偏差这么大，通常说明手机读不准这块屏，按它来匹配会让外接显示器也偏同样的颜色。";
+"Space to start now · Esc to cancel" = "空格键立即开始 · Esc 取消";
+"Top of the iPhone here ↑" = "iPhone 顶部朝这边 ↑";
+"Press the front of the iPhone flat against the outline" = "把 iPhone 正面平贴在亮块上";
+" · Esc" = " · Esc";
+"Measuring the display with an iPhone" = "正在用 iPhone 测量显示器";

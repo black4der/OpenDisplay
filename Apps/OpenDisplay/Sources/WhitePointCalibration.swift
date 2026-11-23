@@ -267,7 +267,11 @@ private struct MainActorCallback: @unchecked Sendable {
                 adaptation = referenceAdaptation()
                 listener.sampleTransform = { [weak self] sample in self?.adapt(sample) ?? sample }
                 let platform = HostPlatform(
-                    makeOverlay: HostPlatform.mac.makeOverlay,
+                    makeOverlay: { id in
+                        NSScreen.screens.first {
+                            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
+                        }.map { PhonePatchOverlay(screen: $0, displayID: id) }
+                    },
                     makeDisplay: { [model] id in try OpenDisplayCalibrationTarget(displayID: id, model: model) })
                 let service = CalibrationService(listener: listener, platform: platform,
                                                  recordDirectory: Self.recordDirectory(),
@@ -382,20 +386,6 @@ private struct MainActorCallback: @unchecked Sendable {
         return best < before && best <= record.configuration.gate.maximumPostCorrectionDeltaE
     }
 
-    /// Every finished run, as d65 recorded it (per-patch means, raw sensor channels included), in
-    /// ~/Library/Application Support/OpenDisplay/Calibration Records — the only trace of a discarded run.
-    private static func save(_ record: ExperimentRecord, purpose: Purpose) {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(record),
-              let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
-        let folder = base.appendingPathComponent("OpenDisplay/Calibration Records", isDirectory: true)
-        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try? data.write(to: folder.appendingPathComponent("\(stamp) \(purpose).json"), options: .atomic)
-    }
-
     private static func white(in record: ExperimentRecord) -> Chromaticity? {
         guard let white = record.measurements.last(where: { $0.request.phase == "white" }) else { return nil }
         let ambient = record.measurements.last(where: { $0.request.phase == "black" })?.mean ?? .zero
@@ -440,7 +430,6 @@ private struct MainActorCallback: @unchecked Sendable {
             }
         case .finished(let record, _):
             self.record = record
-            Self.save(record, purpose: purpose)
             switch purpose {
             case .measureReference:
                 measuredReference = Self.white(in: record)
@@ -463,6 +452,157 @@ private struct MainActorCallback: @unchecked Sendable {
         let directory = base.appendingPathComponent("OpenDisplay/calibration-records", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+}
+
+// MARK: - Patch overlay
+
+/// d65's overlay fills the whole screen and marks the sensor with a dark bar right under it, so a
+/// hand shifting by a millimetre changes the reading and placement starts over. This one, adapted from
+/// d65's `ScreenPatchPresenter` (MIT), lights only a patch a little larger than the phone on black —
+/// like Apple TV's Color Balance and the 10 % windows calibration tools use — and keeps every mark
+/// and word outside it. Esc cancels, Space starts now.
+@MainActor final class PhonePatchOverlay: HostOverlay {
+    let screen: NSScreen
+    let displayID: UInt32
+    var onCancel: (() -> Void)?
+    var onStartNow: (() -> Void)?
+    var showsProgress = true
+    private var window: PatchWindow?
+    private var view: PhonePatchView?
+    private var cursorHidden = false
+    private var awake: NSObjectProtocol?
+    private var phoneModel: String?
+
+    init(screen: NSScreen, displayID: UInt32) { self.screen = screen; self.displayID = displayID }
+
+    func show(_ patch: CalibrationPatch) async throws {
+        let view = open()
+        view.fill = NSColor(srgbRed: patch.red, green: patch.green, blue: patch.blue, alpha: 1)
+        view.hint = nil
+        view.needsDisplay = true
+        window?.displayIfNeeded()
+    }
+
+    func showPlacement(probeModel: String?, hint: String) {
+        phoneModel = probeModel
+        let view = open()
+        view.fill = .white
+        view.hint = hint.localized
+        view.footer = String(localized: "Space to start now · Esc to cancel")
+        view.fraction = nil
+        view.needsDisplay = true
+    }
+
+    func setHint(_ hint: String) { view?.hint = hint.localized; view?.needsDisplay = true }
+
+    func setProgress(_ text: String, fraction: Double?) {
+        guard showsProgress else { return }
+        view?.footer = text + " · Esc"; view?.fraction = fraction; view?.needsDisplay = true
+    }
+
+    func close() {
+        window?.orderOut(nil); window = nil; view = nil
+        if cursorHidden { NSCursor.unhide(); cursorHidden = false }
+        if let awake { ProcessInfo.processInfo.endActivity(awake); self.awake = nil }
+    }
+
+    private func open() -> PhonePatchView {
+        if let view { view.patch = patchSize(); return view }
+        // A dark or sleeping screen would blank the patch the phone is reading.
+        awake = awake ?? ProcessInfo.processInfo.beginActivity(
+            options: [.idleDisplaySleepDisabled, .userInitiated], reason: "Measuring the display with an iPhone")
+        let w = PatchWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false, screen: screen)
+        w.level = .screenSaver
+        w.isOpaque = true
+        w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        w.setFrame(screen.frame, display: false)
+        let v = PhonePatchView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        v.patch = patchSize()
+        w.contentView = v
+        w.onKey = { [weak self] event in
+            switch event.keyCode {
+            case 53: self?.onCancel?(); return true   // Esc
+            case 49: self?.onStartNow?(); return true // Space
+            default: return false
+            }
+        }
+        window = w; view = v
+        NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+        if !cursorHidden { NSCursor.hide(); cursorHidden = true }
+        return v
+    }
+
+    /// The phone at physical size plus a 6 mm margin, so a slightly off-centre phone still sits
+    /// entirely on the patch.
+    private func patchSize() -> CGSize {
+        let phone = Self.bodies[phoneModel ?? ""] ?? PhoneOutline.millimetres(model: phoneModel)
+        let physical = CGDisplayScreenSize(displayID)
+        // EDID-derived and sometimes zero; fall back to ~110 ppi.
+        let perMM = physical.width > 0 ? screen.frame.width / physical.width : 110 / 25.4
+        return CGSize(width: (phone.width + 12) * perMM, height: (phone.height + 12) * perMM)
+    }
+
+    /// iPhone 17 family bodies, which d65's table predates.
+    private static let bodies: [String: (width: Double, height: Double)] = [
+        "iPhone18,1": (71.9, 150.0), "iPhone18,2": (78.0, 163.4), "iPhone18,3": (71.5, 149.6),
+    ]
+}
+
+private final class PatchWindow: NSWindow {
+    var onKey: ((NSEvent) -> Bool)?
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+    override func keyDown(with event: NSEvent) {
+        if onKey?(event) != true { super.keyDown(with: event) }
+    }
+}
+
+private final class PhonePatchView: NSView {
+    var fill: NSColor = .white
+    var patch: CGSize = .zero
+    var hint: String?
+    var footer: String?
+    var fraction: Double?
+
+    override var isOpaque: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.black.setFill()
+        bounds.fill()
+        let rect = NSRect(x: bounds.midX - patch.width / 2, y: bounds.midY - patch.height / 2,
+                          width: patch.width, height: patch.height)
+        let radius = patch.width * 0.14
+        fill.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+        // Marks stay outside the lit patch, where the phone's body covers nothing the sensor sees.
+        let ink = NSColor(white: 1, alpha: 0.4)
+        let frame = NSBezierPath(roundedRect: rect.insetBy(dx: -6, dy: -6), xRadius: radius + 6, yRadius: radius + 6)
+        frame.lineWidth = 1.5
+        frame.setLineDash([8, 6], count: 2, phase: 0)
+        ink.setStroke(); frame.stroke()
+        draw(String(localized: "Top of the iPhone here ↑"), at: NSPoint(x: rect.midX, y: rect.maxY + 26), size: 13, color: ink)
+        if let hint {
+            draw(hint, at: NSPoint(x: bounds.midX, y: min(bounds.maxY - 60, rect.maxY + 80)), size: 22,
+                 color: NSColor(white: 1, alpha: 0.75), weight: .semibold)
+        }
+        if let footer {
+            draw(footer, at: NSPoint(x: bounds.midX, y: max(40, rect.minY - 48)), size: 13, color: ink)
+            if let fraction {
+                let track = NSRect(x: rect.minX, y: max(40, rect.minY - 48) - 18, width: rect.width, height: 2)
+                ink.withAlphaComponent(0.2).setFill(); track.fill()
+                ink.setFill()
+                NSRect(x: track.minX, y: track.minY, width: track.width * min(1, max(0, fraction)), height: 2).fill()
+            }
+        }
+    }
+
+    private func draw(_ text: String, at point: NSPoint, size: CGFloat, color: NSColor, weight: NSFont.Weight = .regular) {
+        let string = NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: size, weight: weight), .foregroundColor: color])
+        let measured = string.size()
+        string.draw(at: NSPoint(x: point.x - measured.width / 2, y: point.y - measured.height / 2))
     }
 }
 
