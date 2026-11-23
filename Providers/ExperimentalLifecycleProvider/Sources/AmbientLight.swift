@@ -27,6 +27,9 @@ public struct AmbientLightReader: Sendable {
 
     private static let eventTypeALS: Int64 = 12                 // kIOHIDEventTypeAmbientLightSensor
     private static let fieldALSLevel = Int32(12 << 16)          // …FieldAmbientLightSensorLevel (lux)
+    // …FieldAmbientLightColorTemperature: the room light's colour temperature in kelvin, the reading
+    // True Tone adapts to (4815 K under warm LEDs, measured on an M1 Max MacBook Pro).
+    private static let fieldALSColorTemperature = Int32(12 << 16 | 10)
 
     public init() {
         let iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY)
@@ -44,6 +47,19 @@ public struct AmbientLightReader: Sendable {
     /// The current ambient light in lux, or nil when the sensor can't be read (covered lid, no
     /// sensor, unavailable SPI). 0 lux is a legitimate reading (dark room), not a failure.
     public func lux() -> Double? {
+        guard let value = field(Self.fieldALSLevel) else { return nil }
+        return value >= 0 ? value : nil
+    }
+
+    /// The room light's colour temperature in kelvin, or nil when the sensor can't be read or has
+    /// no colour channels (those report 0).
+    public func colorTemperature() -> Double? {
+        guard let value = field(Self.fieldALSColorTemperature) else { return nil }
+        return value > 0 ? value : nil
+    }
+
+    /// One field of a fresh ALS event, or nil on any failure.
+    private func field(_ field: Int32) -> Double? {
         guard let create, let setMatching, let copyServices, let copyEvent, let getFloat,
               let client = create(kCFAllocatorDefault)?.takeRetainedValue() else { return nil }
         setMatching(client, ["PrimaryUsagePage": 0xFF00, "PrimaryUsage": 4] as CFDictionary)
@@ -52,8 +68,8 @@ public struct AmbientLightReader: Sendable {
         guard let event = copyEvent(sensor, Self.eventTypeALS, nil, 0)?.takeRetainedValue() else {
             return nil
         }
-        let value = getFloat(event, Self.fieldALSLevel)
-        return value.isFinite && value >= 0 ? value : nil
+        let value = getFloat(event, field)
+        return value.isFinite ? value : nil
     }
 }
 #endif

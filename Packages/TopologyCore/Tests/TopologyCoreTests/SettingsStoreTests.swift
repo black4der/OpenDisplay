@@ -203,6 +203,7 @@ final class SettingsStoreTests: XCTestCase {
         // Both behaviors default OFF (opt-in Labs feature); tunables have sane defaults.
         let defaults = OpenDisplaySettings.default
         XCTAssertTrue(defaults.autoBrightnessDisplays.isEmpty)
+        XCTAssertTrue(defaults.trueToneDisplays.isEmpty)
         XCTAssertEqual(defaults.adaptiveDayStartMinute, 420)
         XCTAssertEqual(defaults.adaptiveNightStartMinute, 1140)
         XCTAssertTrue(defaults.adaptiveDayPresetByDisplay.isEmpty)
@@ -210,6 +211,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = SettingsStore(directory: directory)
         let settings = OpenDisplaySettings(
             autoBrightnessDisplays: ["cg:abc"],
+            trueToneDisplays: ["cg:abc", "cg:def"],
             adaptiveNightStartMinute: 1200,
             adaptiveDayPresetByDisplay: ["cg:abc": 2],
             adaptiveBrightnessOffsetByDisplay: ["cg:abc": -0.15]

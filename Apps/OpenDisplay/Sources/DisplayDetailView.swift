@@ -218,15 +218,25 @@ private struct AppearanceCard: View {
         model.colorTemperature[display.recordID] ?? ColorTemperatureCurve.neutralKelvin
     }
 
+    /// True Tone drives this display's colour temperature, so the manual slider steps aside.
+    private var trueToneOn: Bool {
+        #if PUBLIC_API_ONLY
+        false
+        #else
+        model.trueToneEnabled(for: display)
+        #endif
+    }
+
     var body: some View {
         ODCard(title: "Appearance") {
-            ODRow("Colour temperature") {
+            ODRow("Colour temperature", secondary: trueToneOn ? "Set by True Tone" : nil) {
                 HStack(spacing: 8) {
                     Image(systemName: "thermometer.sun").font(.system(size: 11)).foregroundStyle(.orange)
                     Slider(value: Binding(get: { Double(temperature) },
                                           set: { model.setColorTemperature(Float($0), for: display) }),
                            in: Double(ColorTemperatureCurve.minKelvin)...Double(ColorTemperatureCurve.maxKelvin))
                         .frame(width: 140)
+                        .disabled(trueToneOn)
                     Image(systemName: "thermometer.snowflake").font(.system(size: 11)).foregroundStyle(.cyan)
                     Text(model.colorTemperature[display.recordID] == nil
                          ? "Native" : "\(Int(temperature)) K")
@@ -304,6 +314,13 @@ private struct ControlsCard: View {
                         .labelsHidden().toggleStyle(.switch).controlSize(.small)
                         .disabled(model.displayGroup(containing: display.recordID) != nil)
                 }
+            }
+            // True Tone tints through software colour temperature, so every external gets it.
+            ODDivider()
+            ODRow("True Tone", secondary: "Follows the colour of the room’s light") {
+                Toggle("", isOn: Binding(get: { model.trueToneEnabled(for: display) },
+                                         set: { model.setTrueTone($0, for: display) }))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
             }
             #endif
             ODDivider()
