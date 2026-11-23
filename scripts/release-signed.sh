@@ -35,7 +35,7 @@ APPCAST="${APPCAST:-1}"
 PUBLISH="${PUBLISH:-0}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-opendisplay-notary}"
 ENTITLEMENTS="Apps/OpenDisplay/Resources/OpenDisplay.entitlements"
-PROJECT_URL="https://github.com/aquitaine/OpenDisplay"
+PROJECT_URL="https://github.com/black4der/OpenDisplay"
 DIST="dist"
 
 # --- 0. Resolve the signing identity --------------------------------------------------------------

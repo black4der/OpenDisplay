@@ -80,5 +80,5 @@ public enum ReconnectVerification {
 
     /// Where the off card's "Recovery steps" link goes.
     public static let recoveryGuideURL = URL(
-        string: "https://github.com/aquitaine/OpenDisplay/blob/main/Docs/Recovering-a-stranded-display.md")!
+        string: "https://github.com/black4der/OpenDisplay/blob/main/Docs/Recovering-a-stranded-display.md")!
 }

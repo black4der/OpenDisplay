@@ -9,7 +9,7 @@ lives outside the repository and can't be regenerated from it.
 
 | Piece | Where | Value |
 |---|---|---|
-| Feed | `Apps/OpenDisplay/Resources/Info.plist` → `SUFeedURL` | `https://github.com/aquitaine/OpenDisplay/releases/latest/download/appcast.xml` |
+| Feed | `Apps/OpenDisplay/Resources/Info.plist` → `SUFeedURL` | `https://github.com/black4der/OpenDisplay/releases/latest/download/appcast.xml` |
 | Public key | `Apps/OpenDisplay/Resources/Info.plist` → `SUPublicEDKey` | `G9aQchK8B0eqrXhKwKWat4SRCR/XboPdgpmfuHrBnuE=` |
 | Private key | maintainer's **login keychain** (account `ed25519`) | never on disk, never in the repo |
 | Framework | `project.yml` → `packages.Sparkle` | resolved by SwiftPM, embedded in the app |

@@ -155,7 +155,7 @@ public enum DiagnosticsBundle {
         Exported \(ISO8601DateFormatter().string(from: now)) by OpenDisplay \(app.version) (\(app.build), \(app.flavor))
 
         This file was created on your Mac and has not been sent anywhere. Attach it to your issue at
-        https://github.com/aquitaine/OpenDisplay/issues if you are happy to share it.
+        https://github.com/black4der/OpenDisplay/issues if you are happy to share it.
 
         What is inside:
         \(contents.map { "  - \($0)" }.joined(separator: "\n"))

@@ -172,7 +172,7 @@ targets:
         # (bundle id + team), so the grant survives rebuilds. Release re-signs + notarizes on top.
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "Developer ID Application"
-        DEVELOPMENT_TEAM: 7EKTRESQRZ
+        DEVELOPMENT_TEAM: UJ3WB69S6D
     dependencies:
       - target: OpenDisplayDesignSystem
       - target: CoreGraphicsProvider

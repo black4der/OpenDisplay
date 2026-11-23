@@ -12,7 +12,7 @@ import TopologyCore
 struct AboutView: View {
     @EnvironmentObject private var model: AppModel
 
-    private static let repo = "https://github.com/aquitaine/OpenDisplay"
+    private static let repo = "https://github.com/black4der/OpenDisplay"
 
     /// A single project link shown both in this window and in Settings → About, so the two surfaces
     /// can never drift apart on titles, icons, or destinations.

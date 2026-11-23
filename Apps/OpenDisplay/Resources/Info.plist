@@ -36,9 +36,11 @@
 	     half lives only in the maintainer's login keychain and signs the appcast at release time (see
 	     scripts/sparkle-setup.md). Automatic checking/downloading is NOT declared here: both are user
 	     settings the app writes into Sparkle at launch, so settings.json stays the one place a
-	     preference lives. -->
+	     preference lives. The feed points at this fork (black4der/OpenDisplay); SUPublicEDKey is
+	     still upstream's, so generate your own key pair and replace it before publishing a release
+	     here, or every update from this feed fails verification (scripts/sparkle-setup.md). -->
 	<key>SUFeedURL</key>
-	<string>https://github.com/aquitaine/OpenDisplay/releases/latest/download/appcast.xml</string>
+	<string>https://github.com/black4der/OpenDisplay/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>G9aQchK8B0eqrXhKwKWat4SRCR/XboPdgpmfuHrBnuE=</string>
 	<!-- opendisplay:// URL-scheme automation (Issue 4). Routes onto the same safety-checked,
