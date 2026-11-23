@@ -412,3 +412,5 @@
 "x %@ · y %@ · about %lld K" = "x %1$@ · y %2$@ · 约 %3$lld K";
 "3. In System Settings › Displays, turn off “Automatically adjust brightness” for the built-in display while you measure — otherwise covering its light sensor changes the brightness and placement keeps starting over." = "3. 测量期间请在「系统设置 › 显示器」里关闭内建显示器的「自动调节亮度」— 否则手一挡住它的光感，屏幕亮度就会变，放置会一直重新开始。";
 "4. Tilt the MacBook screen back a little and press the iPhone face-down on it when the outline appears; hold it steady." = "4. 把 MacBook 屏幕往后仰一些，轮廓出现后把 iPhone 屏幕朝下贴上去，保持稳定。";
+"Getting any closer would dim the display by more than 20 %, so it stopped at the best measured pass." = "再往前校正会让显示器变暗超过 20%，所以停在测得最好的那一轮。";
+"A MacBook screen is close to 6500 K with True Tone and Night Shift off. A reading this far off usually means the phone misreads this panel, and matching to it would tint the externals the same way." = "关闭原彩显示和夜览后，MacBook 屏应接近 6500 K。读数偏差这么大，通常说明手机读不准这块屏，按它来匹配会让外接显示器也偏同样的颜色。";

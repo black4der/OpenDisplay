@@ -373,6 +373,15 @@ private struct MainActorCallback: @unchecked Sendable {
     }
 
     /// The built-in's white, ambient subtracted: the white patch less the black one.
+    /// d65 marks the whole run `.rejected` when the *next* pass would dim the display past its 20 % gate,
+    /// even after a measured pass already improved the white within every gate. That pass stands.
+    private static func bestPassStands(in record: ExperimentRecord) -> Bool {
+        guard record.outcome == .rejected, record.restorationErrors.isEmpty, !record.passes.isEmpty,
+              let gains = record.bestGains, !gains.isIdentity,
+              let before = record.baselineDeltaE, let best = record.bestDeltaE else { return false }
+        return best < before && best <= record.configuration.gate.maximumPostCorrectionDeltaE
+    }
+
     private static func white(in record: ExperimentRecord) -> Chromaticity? {
         guard let white = record.measurements.last(where: { $0.request.phase == "white" }) else { return nil }
         let ambient = record.measurements.last(where: { $0.request.phase == "black" })?.mean ?? .zero
@@ -422,7 +431,8 @@ private struct MainActorCallback: @unchecked Sendable {
                 measuredReference = Self.white(in: record)
                 canKeep = measuredReference != nil
             case .calibrate:
-                canKeep = SessionSummary(record: record).canKeep && record.bestGains != nil
+                canKeep = record.bestGains != nil
+                    && (SessionSummary(record: record).canKeep || Self.bestPassStands(in: record))
             }
             step = .review
             preview()
@@ -581,6 +591,11 @@ struct WhitePointSessionView: View {
                     Text("Gains R \(String(format: "%.3f", gains.r)) · G \(String(format: "%.3f", gains.g)) · B \(String(format: "%.3f", gains.b))")
                         .font(.caption).monospacedDigit().foregroundStyle(.secondary)
                 }
+                if session.canKeep, record.outcome == .rejected {
+                    Text("Getting any closer would dim the display by more than 20 %, so it stopped at the best measured pass.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if session.canKeep {
                     Toggle("Show the original", isOn: $session.showOriginal).toggleStyle(.switch).controlSize(.small)
                 }
@@ -594,6 +609,11 @@ struct WhitePointSessionView: View {
                 Text("MacBook white measured.").font(.headline)
                 Text("x \(String(format: "%.4f", white.x)) · y \(String(format: "%.4f", white.y)) · about \(Int(white.correlatedColorTemperature().rounded())) K")
                     .monospacedDigit()
+                if abs(white.correlatedColorTemperature() - 6500) > 1000 {
+                    Text("A MacBook screen is close to 6500 K with True Tone and Night Shift off. A reading this far off usually means the phone misreads this panel, and matching to it would tint the externals the same way.")
+                        .font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Text("Save it as the reference, then calibrate each external display with “Match the MacBook screen” on.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
