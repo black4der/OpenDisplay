@@ -768,15 +768,7 @@ final class AppModel: ObservableObject {
         let split = DimmingComposer.split(method: settings.dimmingMethod, level: softwareDim[observation.recordID] ?? 1)
         writeGamma(level: split.gammaLevel, id: observation.recordID, cgID: displayID)
         dimOverlay.setAlpha(0, for: displayID)
-        #if !PUBLIC_API_ONLY
-        // The MacBook reference is measured on the built-in, which a desk setup keeps dark (Ignore the
-        // built-in): light it for the session — the probe needs a bright white — then put it back.
-        if observation.displayClass == .builtIn, calibrationBrightnessRestore[observation.recordID] == nil {
-            calibrationBrightnessRestore[observation.recordID] = brightness[observation.recordID] ?? 0
-            writeNativeBrightness(0.8, for: observation)
-            brightness[observation.recordID] = 0.8
-        }
-        #endif
+        liftBuiltInForReference(displayID: displayID)
         return true
     }
 
@@ -789,16 +781,32 @@ final class AppModel: ObservableObject {
     }
 
     /// Gives the display back: its kept calibration (if any), dim, overlay, warmth and boost.
-    func endCalibrationSession(displayID: CGDirectDisplayID) {
-        guard let observation = displays.first(where: { $0.cgDisplayID == displayID }),
-              calibrationSessionGains.removeValue(forKey: observation.recordID) != nil else { return }
+    /// The MacBook reference is measured on the built-in, which a desk setup keeps dark (Ignore the
+    /// built-in): light it from the moment the session starts — placement needs a steady, bright white
+    /// too, not just the patches — and put the old level back in `endCalibrationSession`.
+    func liftBuiltInForReference(displayID: CGDirectDisplayID) {
         #if !PUBLIC_API_ONLY
+        guard let observation = displays.first(where: { $0.cgDisplayID == displayID }),
+              observation.displayClass == .builtIn,
+              calibrationBrightnessRestore[observation.recordID] == nil else { return }
+        calibrationBrightnessRestore[observation.recordID] = brightness[observation.recordID] ?? 0
+        writeNativeBrightness(0.8, for: observation)
+        brightness[observation.recordID] = 0.8
+        #endif
+    }
+
+    func endCalibrationSession(displayID: CGDirectDisplayID) {
+        guard let observation = displays.first(where: { $0.cgDisplayID == displayID }) else { return }
+        #if !PUBLIC_API_ONLY
+        // Before the session-gains guard: a reference session cancelled during placement lit the
+        // panel without ever reaching `beginCalibrationSession`.
         if let level = calibrationBrightnessRestore.removeValue(forKey: observation.recordID) {
             writeNativeBrightness(level, for: observation)
             brightness[observation.recordID] = level
         }
         #endif
-        guard !blackedOut.contains(observation.recordID) else { return }
+        guard calibrationSessionGains.removeValue(forKey: observation.recordID) != nil,
+              !blackedOut.contains(observation.recordID) else { return }
         applyDim(level: softwareDim[observation.recordID] ?? 1, id: observation.recordID, cgID: displayID)
     }
 
@@ -3541,10 +3549,13 @@ final class AppModel: ObservableObject {
     private func parkIgnoredBuiltIn() async {
         guard let builtIn = displays.first(where: { $0.displayClass == .builtIn && $0.isActive }),
               let cgID = builtIn.cgDisplayID else { return }
-        #if !PUBLIC_API_ONLY
-        writeNativeBrightness(0, for: builtIn)
-        #endif
-        brightness[builtIn.recordID] = 0
+        // A MacBook-reference session has the panel lit on purpose; leave its brightness alone.
+        if calibrationBrightnessRestore[builtIn.recordID] == nil {
+            #if !PUBLIC_API_ONLY
+            writeNativeBrightness(0, for: builtIn)
+            #endif
+            brightness[builtIn.recordID] = 0
+        }
         let externals = displays.filter { $0.displayClass != .builtIn && $0.isActive }
             .compactMap(\.cgDisplayID).map(CGDisplayBounds)
         guard let target = AutoDisconnectBuiltInPolicy.parkedOrigin(externals: externals) else { return }

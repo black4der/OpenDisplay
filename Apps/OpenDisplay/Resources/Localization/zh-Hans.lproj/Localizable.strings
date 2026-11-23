@@ -385,7 +385,6 @@
 "The probe port is in use, possibly by d65 itself. Quit it and try again." = "探针端口被占用，可能是 d65 自己在运行。请退出它后重试。";
 "OpenDisplay can’t listen on the local network: %@" = "OpenDisplay 无法在局域网上监听：%@";
 "2. Turn off True Tone and Night Shift for now. The MacBook screen lights up for the measurement and goes back to its brightness afterwards." = "2. 暂时关闭「原彩显示」和「夜览」。测量时 MacBook 屏会临时点亮，测完恢复原来的亮度。";
-"3. Press the iPhone face-down on the MacBook screen when the outline appears." = "3. 轮廓出现后，把 iPhone 屏幕朝下贴在 MacBook 屏上。";
 "4. Let the monitor warm up for 20–30 minutes first, and turn off its own dynamic contrast, eco mode and auto-brightness." = "4. 显示器先开机预热 20～30 分钟，并关掉它自己的动态对比度、节能模式和自动亮度。";
 "Brightness is %lld%% — too dim for the iPhone sensor. Raise it to the level you normally use (40%% or more) before you start." = "当前亮度 %lld%% — 对 iPhone 传感器来说太暗了。开始前请调到你平时用的亮度（40%% 以上）。";
 "Current brightness: %lld%%. The calibration is most accurate near this level." = "当前亮度 %lld%%。校准结果在这个亮度附近最准。";
@@ -411,3 +410,5 @@
 "matches the MacBook" = "对齐 MacBook";
 "the MacBook white" = " MacBook 白点";
 "x %@ · y %@ · about %lld K" = "x %1$@ · y %2$@ · 约 %3$lld K";
+"3. In System Settings › Displays, turn off “Automatically adjust brightness” for the built-in display while you measure — otherwise covering its light sensor changes the brightness and placement keeps starting over." = "3. 测量期间请在「系统设置 › 显示器」里关闭内建显示器的「自动调节亮度」— 否则手一挡住它的光感，屏幕亮度就会变，放置会一直重新开始。";
+"4. Tilt the MacBook screen back a little and press the iPhone face-down on it when the outline appears; hold it steady." = "4. 把 MacBook 屏幕往后仰一些，轮廓出现后把 iPhone 屏幕朝下贴上去，保持稳定。";

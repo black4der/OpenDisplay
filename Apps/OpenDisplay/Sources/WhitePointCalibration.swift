@@ -280,6 +280,7 @@ private struct MainActorCallback: @unchecked Sendable {
                 return
             }
         }
+        if purpose == .measureReference { model.liftBuiltInForReference(displayID: displayID) }
         if probe != nil { enterPlacement() } else { step = .connect }
     }
 
@@ -514,7 +515,8 @@ struct WhitePointSessionView: View {
             if session.purpose == .measureReference {
                 Text("1. Open D65 Probe on your iPhone and keep it on the same Wi-Fi as this Mac.")
                 Text("2. Turn off True Tone and Night Shift for now. The MacBook screen lights up for the measurement and goes back to its brightness afterwards.")
-                Text("3. Press the iPhone face-down on the MacBook screen when the outline appears.")
+                Text("3. In System Settings › Displays, turn off “Automatically adjust brightness” for the built-in display while you measure — otherwise covering its light sensor changes the brightness and placement keeps starting over.")
+                Text("4. Tilt the MacBook screen back a little and press the iPhone face-down on it when the outline appears; hold it steady.")
                 Text("Measure with the same iPhone you will calibrate with; the match cancels that phone’s own sensor error.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
