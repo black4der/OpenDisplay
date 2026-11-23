@@ -382,6 +382,20 @@ private struct MainActorCallback: @unchecked Sendable {
         return best < before && best <= record.configuration.gate.maximumPostCorrectionDeltaE
     }
 
+    /// Every finished run, as d65 recorded it (per-patch means, raw sensor channels included), in
+    /// ~/Library/Application Support/OpenDisplay/Calibration Records — the only trace of a discarded run.
+    private static func save(_ record: ExperimentRecord, purpose: Purpose) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(record),
+              let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let folder = base.appendingPathComponent("OpenDisplay/Calibration Records", isDirectory: true)
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? data.write(to: folder.appendingPathComponent("\(stamp) \(purpose).json"), options: .atomic)
+    }
+
     private static func white(in record: ExperimentRecord) -> Chromaticity? {
         guard let white = record.measurements.last(where: { $0.request.phase == "white" }) else { return nil }
         let ambient = record.measurements.last(where: { $0.request.phase == "black" })?.mean ?? .zero
@@ -426,6 +440,7 @@ private struct MainActorCallback: @unchecked Sendable {
             }
         case .finished(let record, _):
             self.record = record
+            Self.save(record, purpose: purpose)
             switch purpose {
             case .measureReference:
                 measuredReference = Self.white(in: record)
