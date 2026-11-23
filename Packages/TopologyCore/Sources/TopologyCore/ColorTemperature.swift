@@ -81,15 +81,18 @@ public struct DisplayCalibration: Hashable, Sendable, Codable {
     public var deltaEBefore: Double?
     public var deltaEAfter: Double?
     public var calibratedAt: Date
+    /// True when it was steered to the MacBook reference rather than absolute D65 (nil in older entries).
+    public var matchedReference: Bool?
 
     public init(red: Float, green: Float, blue: Float, deltaEBefore: Double? = nil,
-                deltaEAfter: Double? = nil, calibratedAt: Date) {
+                deltaEAfter: Double? = nil, calibratedAt: Date, matchedReference: Bool? = nil) {
         self.red = red
         self.green = green
         self.blue = blue
         self.deltaEBefore = deltaEBefore
         self.deltaEAfter = deltaEAfter
         self.calibratedAt = calibratedAt
+        self.matchedReference = matchedReference
     }
 
     /// From linear-light gains (what the solver produces) to encoded-ramp multipliers: a display

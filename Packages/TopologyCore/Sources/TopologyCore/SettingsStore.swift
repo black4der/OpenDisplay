@@ -26,6 +26,8 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
     public var ignoredBuiltIn: IgnoredBuiltInState?
     /// Kept white-point calibrations, keyed by `DisplayRecordID.rawValue` (see `DisplayCalibration`).
     public var displayCalibrations: [String: DisplayCalibration]
+    /// The MacBook screen's white as the probe saw it, the target for "match the MacBook" calibrations.
+    public var calibrationReference: CalibrationReference?
     /// Seconds the "Keep these display settings?" prompt waits before auto-reverting a
     /// resolution/mirror/set-main change (Issue 6). Floored at 3 by the app.
     public var arrangementAutoRevertSeconds: Int
@@ -159,6 +161,7 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         ignoreBuiltInOnExternal: Bool = false,
         ignoredBuiltIn: IgnoredBuiltInState? = nil,
         displayCalibrations: [String: DisplayCalibration] = [:],
+        calibrationReference: CalibrationReference? = nil,
         arrangementAutoRevertSeconds: Int = 10,
         hotkeyShortcuts: KeyboardShortcutRegistry = .defaults,
         displayNotificationsEnabled: Bool = false,
@@ -204,6 +207,7 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         self.ignoreBuiltInOnExternal = ignoreBuiltInOnExternal
         self.ignoredBuiltIn = ignoredBuiltIn
         self.displayCalibrations = displayCalibrations
+        self.calibrationReference = calibrationReference
         self.arrangementAutoRevertSeconds = arrangementAutoRevertSeconds
         self.hotkeyShortcuts = hotkeyShortcuts
         self.displayNotificationsEnabled = displayNotificationsEnabled
@@ -254,6 +258,7 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         case ignoreBuiltInOnExternal = "autoDisconnectBuiltInOnExternal"
         case ignoredBuiltIn
         case displayCalibrations
+        case calibrationReference
         case arrangementAutoRevertSeconds
         case hotkeyShortcuts
         case displayNotificationsEnabled
@@ -316,6 +321,8 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
             ?? defaults.ignoredBuiltIn
         displayCalibrations = container.lenient([String: DisplayCalibration].self, forKey: .displayCalibrations)
             ?? defaults.displayCalibrations
+        calibrationReference = container.lenient(CalibrationReference.self, forKey: .calibrationReference)
+            ?? defaults.calibrationReference
         arrangementAutoRevertSeconds = container.lenient(Int.self, forKey: .arrangementAutoRevertSeconds)
             ?? defaults.arrangementAutoRevertSeconds
         hotkeyShortcuts = container.lenient(KeyboardShortcutRegistry.self, forKey: .hotkeyShortcuts)

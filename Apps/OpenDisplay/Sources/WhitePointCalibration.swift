@@ -7,6 +7,7 @@ import D65Display
 import D65Host
 import D65Link
 import D65MacRuntime
+import D65Measurement
 import DisplayDomain
 import Network
 import OpenDisplayDesignSystem
@@ -35,6 +36,8 @@ private struct MainActorCallback: @unchecked Sendable {
     private var onReady: (() -> Void)?
     private var onFailure: ((String) -> Void)?
     private var onConnection: ((any ProbeConnection) -> Void)?
+    /// Applied to every reading before d65 sees it (see `ProbeNetworkConnection.sampleTransform`).
+    var sampleTransform: ((MeasurementSample) -> MeasurementSample)?
 
     init(port: UInt16 = 50515) throws {
         guard let endpoint = NWEndpoint.Port(rawValue: port) else { throw CalibrationError.invalidConfiguration }
@@ -50,7 +53,12 @@ private struct MainActorCallback: @unchecked Sendable {
         self.onFailure = onFailure
         self.onConnection = onConnection
         listener.newConnectionHandler = { [weak self] connection in
-            Task { @MainActor in self?.onConnection?(ProbeNetworkConnection(connection)) }
+            Task { @MainActor in
+                guard let self else { return }
+                let probe = ProbeNetworkConnection(connection)
+                probe.sampleTransform = self.sampleTransform
+                self.onConnection?(probe)
+            }
         }
         listener.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
@@ -78,6 +86,10 @@ private struct MainActorCallback: @unchecked Sendable {
     private var closed = false
     private var onData: ((Data) -> Void)?
     private var onClose: (() -> Void)?
+    /// When set, each probe reading is rewritten before CalibrationService sees it — how a session
+    /// steers d65 (which always aims at D65) toward the MacBook reference instead.
+    var sampleTransform: ((MeasurementSample) -> MeasurementSample)?
+    private var inbound = Data()
 
     init(_ connection: NWConnection) { self.connection = connection }
 
@@ -106,10 +118,37 @@ private struct MainActorCallback: @unchecked Sendable {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, complete, error in
             Task { @MainActor in
                 guard let self, !self.closed else { return }
-                if let data, !data.isEmpty { self.onData?(data) }
+                if let data, !data.isEmpty { self.deliver(data) }
                 if complete || error != nil { self.close() } else { self.receive() }
             }
         }
+    }
+
+    /// Passes bytes on, rewriting sample readings when a transform is set. Partial frames wait in
+    /// `inbound` for the rest; anything undecodable goes through untouched for the service to reject.
+    private func deliver(_ data: Data) {
+        guard let transform = sampleTransform else { onData?(data); return }
+        inbound.append(data)
+        guard let messages = try? MessageFraming.drain(&inbound) else {
+            let raw = inbound
+            inbound.removeAll()
+            onData?(raw)
+            return
+        }
+        var out = Data()
+        for message in messages {
+            let rewritten: CalibrationMessage
+            switch message {
+            case .taggedSample(let session, let patch, let sample):
+                rewritten = .taggedSample(sessionID: session, patchID: patch, sample: transform(sample))
+            case .previewSample(let session, let sample, let stable):
+                rewritten = .previewSample(sessionID: session, sample: transform(sample), stable: stable)
+            default:
+                rewritten = message
+            }
+            if let encoded = try? MessageFraming.encode(rewritten) { out.append(encoded) }
+        }
+        if !out.isEmpty { onData?(out) }
     }
 
     func send(_ data: Data, completion: (() -> Void)?) {
@@ -177,11 +216,13 @@ private struct MainActorCallback: @unchecked Sendable {
 
 // MARK: - Session
 
-/// One calibration session: Prepare → Connect → Place → Measure → Review, reduced from d65's
-/// `SessionEvent`s. The display stays owned by the session (bare panel, auto-brightness paused)
-/// until `close()`, so Review can preview the result before Keep or Discard.
+/// One session, reduced from d65's `SessionEvent`s: Prepare → Connect → Place → Measure → Review.
+/// It either calibrates an external display, or measures the MacBook's built-in white as the
+/// reference those calibrations can match. The display stays owned by the session (bare panel,
+/// auto-brightness paused) until `close()`, so Review can preview the result before Keep or Discard.
 @MainActor final class WhitePointSession: ObservableObject {
     enum Step: Int, CaseIterable { case prepare, connect, place, measure, review }
+    enum Purpose { case calibrate, measureReference }
 
     @Published private(set) var step = Step.prepare
     @Published private(set) var probe: ProbeIdentity?
@@ -191,29 +232,40 @@ private struct MainActorCallback: @unchecked Sendable {
     @Published private(set) var verifyingPass: Int?
     @Published private(set) var record: ExperimentRecord?
     @Published private(set) var canKeep = false
+    /// The reference white this session measured (measureReference only).
+    @Published private(set) var measuredReference: Chromaticity?
+    /// Steer to the MacBook reference instead of absolute D65 (calibrate only; needs a reference).
+    @Published var matchReference: Bool
     /// Hold to see the panel without the candidate correction.
     @Published var showOriginal = false { didSet { preview() } }
 
+    let purpose: Purpose
     let displayID: CGDirectDisplayID
     let displayName: String
     private let model: AppModel
     private var service: CalibrationService?
+    private var adaptation: ChromaticAdaptation.Matrix?
     private var autoStartArmed = true
     private var closed = false
 
-    init(displayID: CGDirectDisplayID, displayName: String, model: AppModel) {
+    init(purpose: Purpose, displayID: CGDirectDisplayID, displayName: String, model: AppModel) {
+        self.purpose = purpose
         self.displayID = displayID
         self.displayName = displayName
         self.model = model
+        matchReference = purpose == .calibrate && model.calibrationReference != nil
     }
 
     var patchCount: Int { CalibrationPatch.sequence.count }
+    var reference: CalibrationReference? { model.calibrationReference }
 
     func start() {
         notice = nil
         if service == nil {
             do {
                 let listener = try ProbeNetworkListener()
+                adaptation = referenceAdaptation()
+                listener.sampleTransform = { [weak self] sample in self?.adapt(sample) ?? sample }
                 let platform = HostPlatform(
                     makeOverlay: HostPlatform.mac.makeOverlay,
                     makeDisplay: { [model] id in try OpenDisplayCalibrationTarget(displayID: id, model: model) })
@@ -237,26 +289,37 @@ private struct MainActorCallback: @unchecked Sendable {
         verifyingPass = nil
         record = nil
         canKeep = false
+        measuredReference = nil
         step = .measure
-        service.run(configuration: CalibrationConfiguration(mode: .calibrate), displayID: displayID)
+        let mode: CalibrationMode = purpose == .measureReference ? .measureOnly : .calibrate
+        service.run(configuration: CalibrationConfiguration(mode: mode), displayID: displayID)
     }
 
     func retry() {
         record = nil
         canKeep = false
+        measuredReference = nil
         showOriginal = false
         model.setCalibrationSessionGains(.neutral, displayID: displayID)
         if probe != nil { enterPlacement() } else { step = .connect }
     }
 
     func keep() {
-        if let record, let gains = record.bestGains {
-            model.keepCalibration(DisplayCalibration(
-                red: DisplayCalibration.encoded(linear: gains.r, gamma: record.gamma),
-                green: DisplayCalibration.encoded(linear: gains.g, gamma: record.gamma),
-                blue: DisplayCalibration.encoded(linear: gains.b, gamma: record.gamma),
-                deltaEBefore: record.baselineDeltaE, deltaEAfter: record.bestDeltaE,
-                calibratedAt: Date()), displayID: displayID)
+        switch purpose {
+        case .measureReference:
+            if let white = measuredReference, let probe {
+                model.saveCalibrationReference(CalibrationReference(
+                    x: white.x, y: white.y, probeModel: probe.model, measuredAt: Date()))
+            }
+        case .calibrate:
+            if let record, let gains = record.bestGains {
+                model.keepCalibration(DisplayCalibration(
+                    red: DisplayCalibration.encoded(linear: gains.r, gamma: record.gamma),
+                    green: DisplayCalibration.encoded(linear: gains.g, gamma: record.gamma),
+                    blue: DisplayCalibration.encoded(linear: gains.b, gamma: record.gamma),
+                    deltaEBefore: record.baselineDeltaE, deltaEAfter: record.bestDeltaE,
+                    calibratedAt: Date(), matchedReference: adaptation != nil), displayID: displayID)
+            }
         }
         close()
     }
@@ -275,6 +338,23 @@ private struct MainActorCallback: @unchecked Sendable {
         }
     }
 
+    /// The Bradford map from the reference white to the exact white d65's engine steers to, so its
+    /// "D65" lands on the MacBook white as this phone sees it. Nil when not matching a reference.
+    private func referenceAdaptation() -> ChromaticAdaptation.Matrix? {
+        guard purpose == .calibrate, matchReference, let reference else { return nil }
+        let target = (try? CalibrationConfiguration(mode: .calibrate).whiteTarget()) ?? .d65
+        return ChromaticAdaptation.bradford(fromWhite: (reference.x, reference.y), toWhite: (target.x, target.y))
+    }
+
+    private func adapt(_ sample: MeasurementSample) -> MeasurementSample {
+        guard let adaptation else { return sample }
+        let v = ChromaticAdaptation.apply(adaptation, x: sample.xyz.x, y: sample.xyz.y, z: sample.xyz.z)
+        var adapted = sample
+        adapted.xyz = XYZ(x: v.x, y: v.y, z: v.z)
+        adapted.reportedCCT = nil  // the sensor's own CCT describes the raw reading, not the adapted one
+        return adapted
+    }
+
     private func enterPlacement() {
         autoStartArmed = true
         placement = PlacementReading(state: .waiting)
@@ -283,12 +363,21 @@ private struct MainActorCallback: @unchecked Sendable {
     }
 
     private func preview() {
-        guard step == .review, canKeep, let record, let gains = record.bestGains else { return }
+        guard purpose == .calibrate, step == .review, canKeep, let record, let gains = record.bestGains else { return }
         let shown = showOriginal ? ColorTemperatureCurve.Gains.neutral : ColorTemperatureCurve.Gains(
             red: DisplayCalibration.encoded(linear: gains.r, gamma: record.gamma),
             green: DisplayCalibration.encoded(linear: gains.g, gamma: record.gamma),
             blue: DisplayCalibration.encoded(linear: gains.b, gamma: record.gamma))
         model.setCalibrationSessionGains(shown, displayID: displayID)
+    }
+
+    /// The built-in's white, ambient subtracted: the white patch less the black one.
+    private static func white(in record: ExperimentRecord) -> Chromaticity? {
+        guard let white = record.measurements.last(where: { $0.request.phase == "white" }) else { return nil }
+        let ambient = record.measurements.last(where: { $0.request.phase == "black" })?.mean ?? .zero
+        let emitted = white.subtracting(ambient)
+        guard emitted.y > 1 else { return nil }
+        return emitted.chromaticity
     }
 
     private func handle(_ event: SessionEvent) {
@@ -300,6 +389,9 @@ private struct MainActorCallback: @unchecked Sendable {
         case .probeConnected(let identity):
             probe = identity
             notice = nil
+            if adaptation != nil, let reference, reference.probeModel != identity.model {
+                notice = String(localized: "The MacBook reference was measured with another iPhone (\(reference.probeModel)). Measure it again with this one for an accurate match.")
+            }
             if step == .connect { enterPlacement() }
         case .probeDisconnected:
             probe = nil
@@ -324,7 +416,13 @@ private struct MainActorCallback: @unchecked Sendable {
             }
         case .finished(let record, _):
             self.record = record
-            canKeep = SessionSummary(record: record).canKeep && record.bestGains != nil
+            switch purpose {
+            case .measureReference:
+                measuredReference = Self.white(in: record)
+                canKeep = measuredReference != nil
+            case .calibrate:
+                canKeep = SessionSummary(record: record).canKeep && record.bestGains != nil
+            }
             step = .review
             preview()
             NSApp.activate(ignoringOtherApps: true)
@@ -345,6 +443,7 @@ private struct MainActorCallback: @unchecked Sendable {
 // MARK: - Session window
 
 struct WhitePointSessionView: View {
+    @EnvironmentObject private var model: AppModel
     @ObservedObject var session: WhitePointSession
     let onDone: () -> Void
 
@@ -352,7 +451,11 @@ struct WhitePointSessionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: ODSpacing.md) {
-            Text("Calibrate white point · \(session.displayName)").font(.title3)
+            if session.purpose == .measureReference {
+                Text("Measure the MacBook reference").font(.title3)
+            } else {
+                Text("Calibrate white point · \(session.displayName)").font(.title3)
+            }
             HStack(spacing: 6) {
                 ForEach(WhitePointSession.Step.allCases, id: \.self) { step in
                     Text(Self.stepTitles[step.rawValue].localized)
@@ -376,15 +479,7 @@ struct WhitePointSessionView: View {
 
     @ViewBuilder private var content: some View {
         switch session.step {
-        case .prepare:
-            VStack(alignment: .leading, spacing: 8) {
-                Text("1. Open D65 Probe on your iPhone and keep it on the same Wi-Fi as this Mac.")
-                Text("2. Turn off True Tone and Night Shift for now, and keep the room light steady and not too bright.")
-                Text("3. Leave the monitor at the brightness and contrast you normally use — changing contrast later makes a calibration stale.")
-                Text("The display shows full-screen patches for about a minute. Press Esc on it to cancel.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .fixedSize(horizontal: false, vertical: true)
+        case .prepare: prepare
         case .connect:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
@@ -410,7 +505,57 @@ struct WhitePointSessionView: View {
                 Text("Keep the iPhone still until it finishes.").font(.caption).foregroundStyle(.secondary)
             }
         case .review:
-            review
+            if session.purpose == .measureReference { referenceReview } else { review }
+        }
+    }
+
+    @ViewBuilder private var prepare: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if session.purpose == .measureReference {
+                Text("1. Open D65 Probe on your iPhone and keep it on the same Wi-Fi as this Mac.")
+                Text("2. Turn off True Tone and Night Shift for now. The MacBook screen lights up for the measurement and goes back to its brightness afterwards.")
+                Text("3. Press the iPhone face-down on the MacBook screen when the outline appears.")
+                Text("Measure with the same iPhone you will calibrate with; the match cancels that phone’s own sensor error.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Toggle(isOn: $session.matchReference) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Match the MacBook screen")
+                        if let reference = session.reference {
+                            Text("Reference measured with \(reference.probeModel) on \(reference.measuredAt.formatted(.dateTime.month(.abbreviated).day())).")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("Measure the MacBook reference first (in the White point card); otherwise this aims at absolute D65 as the iPhone sees it.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .disabled(session.reference == nil)
+                Text("1. Open D65 Probe on your iPhone and keep it on the same Wi-Fi as this Mac.")
+                Text("2. Turn off True Tone and Night Shift for now, and keep the room light steady and not too bright.")
+                Text("3. Leave the monitor at the brightness and contrast you normally use — changing contrast later makes a calibration stale.")
+                Text("4. Let the monitor warm up for 20–30 minutes first, and turn off its own dynamic contrast, eco mode and auto-brightness.")
+                brightnessHint
+            }
+            Text("The display shows full-screen patches for about a minute. Press Esc on it to cancel.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// The display's live brightness: calibrate at the level you use, and not so dim that the
+    /// iPhone sensor's noise (worst on the dark blue patch) swamps the reading.
+    @ViewBuilder private var brightnessHint: some View {
+        if let observation = model.displays.first(where: { $0.cgDisplayID == session.displayID }),
+           let level = model.brightness[observation.recordID] {
+            let percent = Int((level * 100).rounded())
+            if level < 0.4 {
+                Text("Brightness is \(percent)% — too dim for the iPhone sensor. Raise it to the level you normally use (40% or more) before you start.")
+                    .font(.caption).foregroundStyle(.orange)
+            } else {
+                Text("Current brightness: \(percent)%. The calibration is most accurate near this level.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -423,10 +568,11 @@ struct WhitePointSessionView: View {
                     Text("No correction worth keeping — the display was left as it was.").font(.headline)
                 }
                 if let before = record.baselineDeltaE {
+                    let target = session.matchReference ? String(localized: "the MacBook white") : "D65"
                     if let after = record.bestDeltaE {
-                        Text("White error ΔE00: \(String(format: "%.2f", before)) → \(String(format: "%.2f", after))")
+                        Text("Distance from \(target), ΔE00: \(String(format: "%.2f", before)) → \(String(format: "%.2f", after))")
                     } else {
-                        Text("White error ΔE00: \(String(format: "%.2f", before))")
+                        Text("Distance from \(target), ΔE00: \(String(format: "%.2f", before))")
                     }
                 }
                 if let gains = record.bestGains {
@@ -436,6 +582,21 @@ struct WhitePointSessionView: View {
                 if session.canKeep {
                     Toggle("Show the original", isOn: $session.showOriginal).toggleStyle(.switch).controlSize(.small)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder private var referenceReview: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let white = session.measuredReference {
+                Text("MacBook white measured.").font(.headline)
+                Text("x \(String(format: "%.4f", white.x)) · y \(String(format: "%.4f", white.y)) · about \(Int(white.correlatedColorTemperature().rounded())) K")
+                    .monospacedDigit()
+                Text("Save it as the reference, then calibrate each external display with “Match the MacBook screen” on.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("The measurement wasn’t usable — try again with the phone flat inside the outline.").font(.headline)
             }
         }
     }
@@ -456,7 +617,7 @@ struct WhitePointSessionView: View {
                 Button("Discard") { session.close(); onDone() }
                 Button("Try again") { session.retry() }
                 Spacer()
-                Button("Keep") { session.keep(); onDone() }
+                Button(session.purpose == .measureReference ? "Save as reference" : "Keep") { session.keep(); onDone() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!session.canKeep)
             } else {
@@ -474,7 +635,8 @@ struct WhitePointSessionView: View {
 
 // MARK: - Display card
 
-/// The "White point" card on an external display's page: status, calibrate, remove.
+/// The "White point" card on an external display's page: the MacBook reference, and this display's
+/// calibration (status, calibrate, remove).
 struct WhitePointCard: View {
     @EnvironmentObject private var model: AppModel
     let display: DisplayObservation
@@ -483,6 +645,16 @@ struct WhitePointCard: View {
     var body: some View {
         ODCard(title: "White point",
                footnote: "Measured with the D65 Probe app on an iPhone placed on the screen. Corrects the white only, in software, while OpenDisplay runs.") {
+            ODRow("MacBook reference", secondary: referenceStatus) {
+                Button("Measure MacBook…") {
+                    guard let builtIn = model.activeBuiltInDisplay, let cgID = builtIn.cgDisplayID else { return }
+                    session = WhitePointSession(purpose: .measureReference, displayID: cgID,
+                                                displayName: model.displayName(for: builtIn), model: model)
+                }
+                .controlSize(.small)
+                .disabled(session != nil || model.activeBuiltInDisplay == nil)
+            }
+            ODDivider()
             ODRow("Calibration", secondary: status) {
                 HStack(spacing: 8) {
                     if model.calibration(for: display) != nil {
@@ -491,8 +663,8 @@ struct WhitePointCard: View {
                     }
                     Button("Calibrate…") {
                         guard let cgID = display.cgDisplayID else { return }
-                        session = WhitePointSession(displayID: cgID, displayName: model.displayName(for: display),
-                                                    model: model)
+                        session = WhitePointSession(purpose: .calibrate, displayID: cgID,
+                                                    displayName: model.displayName(for: display), model: model)
                     }
                     .controlSize(.small)
                     .disabled(session != nil)
@@ -506,13 +678,23 @@ struct WhitePointCard: View {
         }
     }
 
+    private var referenceStatus: String {
+        guard model.activeBuiltInDisplay != nil || model.calibrationReference != nil else {
+            return String(localized: "Turn the built-in display on to measure it")
+        }
+        guard let reference = model.calibrationReference else { return String(localized: "Not measured") }
+        let date = reference.measuredAt.formatted(.dateTime.month(.abbreviated).day())
+        return String(localized: "Measured with \(reference.probeModel) · \(date)")
+    }
+
     private var status: String {
         guard let calibration = model.calibration(for: display) else { return String(localized: "Not calibrated") }
         let date = calibration.calibratedAt.formatted(.dateTime.month(.abbreviated).day())
+        let target = calibration.matchedReference == true ? String(localized: "matches the MacBook") : "D65"
         if let before = calibration.deltaEBefore, let after = calibration.deltaEAfter {
-            return String(localized: "Calibrated · ΔE \(String(format: "%.1f", before)) → \(String(format: "%.1f", after)) · \(date)")
+            return String(localized: "Calibrated to \(target) · ΔE \(String(format: "%.1f", before)) → \(String(format: "%.1f", after)) · \(date)")
         }
-        return String(localized: "Calibrated · \(date)")
+        return String(localized: "Calibrated to \(target) · \(date)")
     }
 }
 #endif

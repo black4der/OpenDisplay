@@ -732,6 +732,21 @@ final class AppModel: ObservableObject {
     /// Session-only gains while a calibration session owns a display: neutral while it measures the
     /// bare panel, the candidate gains while it verifies or previews. Absent = the kept calibration.
     private var calibrationSessionGains: [DisplayRecordID: ColorTemperatureCurve.Gains] = [:]
+    /// Built-in brightness to put back after a MacBook-reference session lit the panel.
+    private var calibrationBrightnessRestore: [DisplayRecordID: Float] = [:]
+
+    /// The MacBook screen's white as the probe saw it (the "match the MacBook" target), if measured.
+    var calibrationReference: CalibrationReference? { settings.calibrationReference }
+
+    func saveCalibrationReference(_ reference: CalibrationReference) {
+        settings.calibrationReference = reference
+        persistSettings()
+    }
+
+    /// The built-in panel when it is active, i.e. measurable as the MacBook reference.
+    var activeBuiltInDisplay: DisplayObservation? {
+        displays.first { $0.displayClass == .builtIn && $0.isActive }
+    }
 
     /// The calibration multipliers in effect on a display: the session's, else the kept one, else none.
     private func calibrationGains(for id: DisplayRecordID) -> ColorTemperatureCurve.Gains {
@@ -753,6 +768,15 @@ final class AppModel: ObservableObject {
         let split = DimmingComposer.split(method: settings.dimmingMethod, level: softwareDim[observation.recordID] ?? 1)
         writeGamma(level: split.gammaLevel, id: observation.recordID, cgID: displayID)
         dimOverlay.setAlpha(0, for: displayID)
+        #if !PUBLIC_API_ONLY
+        // The MacBook reference is measured on the built-in, which a desk setup keeps dark (Ignore the
+        // built-in): light it for the session — the probe needs a bright white — then put it back.
+        if observation.displayClass == .builtIn, calibrationBrightnessRestore[observation.recordID] == nil {
+            calibrationBrightnessRestore[observation.recordID] = brightness[observation.recordID] ?? 0
+            writeNativeBrightness(0.8, for: observation)
+            brightness[observation.recordID] = 0.8
+        }
+        #endif
         return true
     }
 
@@ -767,8 +791,14 @@ final class AppModel: ObservableObject {
     /// Gives the display back: its kept calibration (if any), dim, overlay, warmth and boost.
     func endCalibrationSession(displayID: CGDirectDisplayID) {
         guard let observation = displays.first(where: { $0.cgDisplayID == displayID }),
-              calibrationSessionGains.removeValue(forKey: observation.recordID) != nil,
-              !blackedOut.contains(observation.recordID) else { return }
+              calibrationSessionGains.removeValue(forKey: observation.recordID) != nil else { return }
+        #if !PUBLIC_API_ONLY
+        if let level = calibrationBrightnessRestore.removeValue(forKey: observation.recordID) {
+            writeNativeBrightness(level, for: observation)
+            brightness[observation.recordID] = level
+        }
+        #endif
+        guard !blackedOut.contains(observation.recordID) else { return }
         applyDim(level: softwareDim[observation.recordID] ?? 1, id: observation.recordID, cgID: displayID)
     }
 
