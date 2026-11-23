@@ -53,10 +53,6 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
     /// below with the lid closed. Opt-in per display, like a Mac display's own setting. Replaces
     /// the single "match the built-in" switch older versions had (migrated on decode).
     public var autoBrightnessDisplays: Set<String>
-    /// True Tone, per display (`DisplayRecordID.rawValue`): these externals' white point leans toward
-    /// the room light's colour temperature from the Mac's ambient colour sensor (`TrueTonePolicy`),
-    /// through the software colour-temperature control. Opt-in per display.
-    public var trueToneDisplays: Set<String>
     /// Minute-of-day the adaptive "day" phase begins (default 420 = 07:00).
     public var adaptiveDayStartMinute: Int
     /// Minute-of-day the adaptive "night" phase begins (default 1140 = 19:00).
@@ -164,7 +160,6 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         publishOSDEventsEnabled: Bool = false,
         faceLightPriorStateByDisplay: [String: FaceLightPolicy.PriorState] = [:],
         autoBrightnessDisplays: Set<String> = [],
-        trueToneDisplays: Set<String> = [],
         adaptiveDayStartMinute: Int = 420,
         adaptiveNightStartMinute: Int = 1140,
         adaptiveTransitionMinutes: Int = 30,
@@ -208,7 +203,6 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         self.publishOSDEventsEnabled = publishOSDEventsEnabled
         self.faceLightPriorStateByDisplay = faceLightPriorStateByDisplay
         self.autoBrightnessDisplays = autoBrightnessDisplays
-        self.trueToneDisplays = trueToneDisplays
         self.adaptiveDayStartMinute = adaptiveDayStartMinute
         self.adaptiveNightStartMinute = adaptiveNightStartMinute
         self.adaptiveTransitionMinutes = adaptiveTransitionMinutes
@@ -257,7 +251,6 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         case publishOSDEventsEnabled
         case faceLightPriorStateByDisplay
         case autoBrightnessDisplays
-        case trueToneDisplays
         case adaptiveDayStartMinute
         case adaptiveNightStartMinute
         case adaptiveTransitionMinutes
@@ -346,8 +339,6 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
             .lenient(Bool.self, forKey: .adaptiveBrightnessSyncEnabled) ?? false
         autoBrightnessDisplays = container.lenient(Set<String>.self, forKey: .autoBrightnessDisplays)
             ?? (legacySyncOn ? Set(offsets.keys) : defaults.autoBrightnessDisplays)
-        trueToneDisplays = container.lenient(Set<String>.self, forKey: .trueToneDisplays)
-            ?? defaults.trueToneDisplays
         adaptiveLocationModeEnabled = container.lenient(Bool.self, forKey: .adaptiveLocationModeEnabled)
             ?? defaults.adaptiveLocationModeEnabled
         clockScheduleEnabled = container.lenient(Bool.self, forKey: .clockScheduleEnabled)

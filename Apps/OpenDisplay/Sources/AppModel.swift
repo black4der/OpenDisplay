@@ -226,8 +226,6 @@ final class AppModel: ObservableObject {
     /// EMA-smoothed ambient lux (α=0.4 toward the newest sample) so a hand shadow over the sensor
     /// doesn't ripple into DDC writes; nil when the sensor is unreadable (lid closed).
     private var ambientLuxEMA: Double?
-    /// Smoothed room-light colour temperature for True Tone; nil until first read or while unused.
-    private var ambientKelvinEMA: Double?
     #endif
     /// Display Groups (Issue #39): the pure policy's per-group state (which member currently leads,
     /// at what level, and when it last fanned out). Keyed by `DisplayGroup.id`; session-only, since a
@@ -2202,7 +2200,7 @@ final class AppModel: ObservableObject {
     /// 5s cadence: one cheap DisplayServices IPC per tick; slower would visibly lag the built-in
     /// panel animating right next to the external, faster buys nothing through the 0.02 hysteresis.
     func reconcileAdaptiveLoop() {
-        let anyModeOn = !settings.autoBrightnessDisplays.isEmpty || !settings.trueToneDisplays.isEmpty
+        let anyModeOn = !settings.autoBrightnessDisplays.isEmpty
             || settings.clockScheduleEnabled || settings.adaptiveLocationModeEnabled
         let wantRunning = anyModeOn && sessionGate.permitsAutomaticDisplayActions
             && displays.contains { $0.isActive && $0.displayClass != .builtIn }
@@ -2229,7 +2227,6 @@ final class AppModel: ObservableObject {
         let autoIDs = settings.autoBrightnessDisplays
         let clockOn = settings.clockScheduleEnabled && !settings.clockScheduleEntries.isEmpty
         let locationOn = settings.adaptiveLocationModeEnabled
-        await applyTrueTone()
         guard !autoIDs.isEmpty || clockOn || locationOn else { return }
 
         let now = Date()
@@ -2295,28 +2292,6 @@ final class AppModel: ObservableObject {
                 persistSettings()
             }
             adaptiveStates[id] = decision.state
-        }
-    }
-
-    /// True Tone pass: lean each opted-in external's white point toward the room light's colour
-    /// temperature (`TrueTonePolicy`). Software gamma, so any external qualifies — no DDC gate. An
-    /// unreadable sensor (lid closed) holds the current tint rather than snapping back to neutral.
-    private func applyTrueTone() async {
-        let ids = settings.trueToneDisplays
-        guard !ids.isEmpty else { ambientKelvinEMA = nil; return }
-        let reader = ambientLight
-        if let sample = await Task.detached(priority: .utility, operation: { reader.colorTemperature() }).value {
-            // Slower than the lux EMA: True Tone shifts colour gradually, never in visible jumps.
-            ambientKelvinEMA = ambientKelvinEMA.map { $0 * 0.8 + sample * 0.2 } ?? sample
-        }
-        guard let ambient = ambientKelvinEMA else { return }
-        let target = TrueTonePolicy.displayKelvin(forAmbient: ambient)
-        for observation in displays where observation.displayClass != .builtIn && observation.isActive
-            && ids.contains(observation.recordID.rawValue) {
-            let current = colorTemperature[observation.recordID] ?? ColorTemperatureCurve.neutralKelvin
-            if abs(current - target) >= TrueTonePolicy.hysteresisKelvin {
-                setColorTemperature(target, for: observation)
-            }
         }
     }
 
@@ -2443,24 +2418,6 @@ final class AppModel: ObservableObject {
 
     func autoBrightnessEnabled(for observation: DisplayObservation) -> Bool {
         settings.autoBrightnessDisplays.contains(observation.recordID.rawValue)
-    }
-
-    func trueToneEnabled(for observation: DisplayObservation) -> Bool {
-        settings.trueToneDisplays.contains(observation.recordID.rawValue)
-    }
-
-    /// The per-display True Tone switch. Turning it off hands the display back its neutral white point.
-    func setTrueTone(_ enabled: Bool, for observation: DisplayObservation) {
-        let key = observation.recordID.rawValue
-        guard trueToneEnabled(for: observation) != enabled else { return }
-        if enabled {
-            settings.trueToneDisplays.insert(key)
-        } else {
-            settings.trueToneDisplays.remove(key)
-            setColorTemperature(ColorTemperatureCurve.neutralKelvin, for: observation)
-        }
-        persistSettings()
-        reconcileAdaptiveLoop()
     }
 
     /// The per-display auto-brightness switch. Turning it on starts from the light curve itself —
@@ -3368,8 +3325,8 @@ final class AppModel: ObservableObject {
             await refresh()
             logDisplayEvent("topology")
             // macOS resets every display's transfer tables on a reconfiguration (turning the built-in
-            // on or off is enough), wiping software dim, colour temperature and True Tone while the
-            // UI still shows them. Put them back now, and once more after it has settled.
+            // on or off is enough), wiping software dim and colour temperature while the UI still
+            // shows them. Put them back now, and once more after it has settled.
             reassertSoftwareGamma()
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 1_500_000_000)

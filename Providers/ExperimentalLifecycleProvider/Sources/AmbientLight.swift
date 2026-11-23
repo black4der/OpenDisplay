@@ -27,9 +27,6 @@ public struct AmbientLightReader: Sendable {
 
     private static let eventTypeALS: Int64 = 12                 // kIOHIDEventTypeAmbientLightSensor
     private static let fieldALSLevel = Int32(12 << 16)          // …FieldAmbientLightSensorLevel (lux)
-    // …FieldAmbientLightColorTemperature: the room light's colour temperature in kelvin, the reading
-    // True Tone adapts to (4815 K under warm LEDs, measured on an M1 Max MacBook Pro).
-    private static let fieldALSColorTemperature = Int32(12 << 16 | 10)
 
     public init() {
         let iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY)
@@ -49,13 +46,6 @@ public struct AmbientLightReader: Sendable {
     public func lux() -> Double? {
         guard let value = field(Self.fieldALSLevel) else { return nil }
         return value >= 0 ? value : nil
-    }
-
-    /// The room light's colour temperature in kelvin, or nil when the sensor can't be read or has
-    /// no colour channels (those report 0).
-    public func colorTemperature() -> Double? {
-        guard let value = field(Self.fieldALSColorTemperature) else { return nil }
-        return value > 0 ? value : nil
     }
 
     /// One field of a fresh ALS event, or nil on any failure.

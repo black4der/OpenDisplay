@@ -46,11 +46,4 @@ final class ColorTemperatureTests: XCTestCase {
         XCTAssertEqual(ColorTemperatureCurve.gains(kelvin: 20000),
                        ColorTemperatureCurve.gains(kelvin: ColorTemperatureCurve.maxKelvin))
     }
-
-    func testTrueToneLeansPartwayTowardTheRoomAndStaysInRange() {
-        XCTAssertEqual(TrueTonePolicy.displayKelvin(forAmbient: 6500), 6500)        // daylight: neutral
-        XCTAssertEqual(TrueTonePolicy.displayKelvin(forAmbient: 4815), 5994.5, accuracy: 1)  // warm LEDs
-        XCTAssertEqual(TrueTonePolicy.displayKelvin(forAmbient: 1800), 5200)        // candle: clamped
-        XCTAssertEqual(TrueTonePolicy.displayKelvin(forAmbient: 12000), 7000)       // overcast sky: clamped
-    }
 }

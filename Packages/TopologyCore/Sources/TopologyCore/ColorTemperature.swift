@@ -68,22 +68,3 @@ public enum ColorTemperatureCurve {
     }
 }
 
-/// True Tone for external displays: how far a display's white point leans toward the room's light.
-/// macOS's own True Tone offers no reading of the white point it applies, so this works from the
-/// same ambient colour sensor. The display moves `strength` of the way from neutral toward the
-/// room's colour temperature, within `range`: a warm lamp warms the screen, daylight leaves it
-/// neutral, and it never swings to the extremes the manual slider allows. Deliberately subtle, like
-/// Apple's own: leaning 60% of the way turned a monitor visibly yellow under ordinary warm LEDs.
-public enum TrueTonePolicy {
-    public static let strength: Float = 0.3
-    public static let range: ClosedRange<Float> = 5200...7000
-    /// Smallest change worth a gamma write. Matches the colour-temperature setter's snap-to-native
-    /// band, so a target just off neutral doesn't rewrite every tick.
-    public static let hysteresisKelvin: Float = 100
-
-    public static func displayKelvin(forAmbient ambient: Double) -> Float {
-        let neutral = ColorTemperatureCurve.neutralKelvin
-        let target = neutral + strength * (Float(ambient) - neutral)
-        return min(max(target, range.lowerBound), range.upperBound)
-    }
-}

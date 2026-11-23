@@ -349,6 +349,3 @@
 "When a chosen app becomes frontmost, its display’s brightness — and optionally contrast — switch to the values you set, and restore when the app leaves. Changes are silent (no HUD) and pause Adaptive Display on those displays while the preset is active." = "当所选应用切换到最前面时，其显示器的亮度（以及可选的对比度）会切换为你设置的值，应用离开时再恢复。变化是静默的（不显示 HUD），并且预设生效期间会暂停这些显示器上的自适应显示。";
 "Auto-brightness reads the Mac’s ambient light sensor while the lid is open, whether or not the built-in display is on. With the lid closed it follows Location Mode when that is on, otherwise this schedule (day/night levels, ramped)." = "自动调节亮度在开盖时读取 Mac 的环境光传感器，无论内建显示器是否开启。合盖时，如果开启了位置模式就跟随位置模式，否则使用此计划（白天/夜间亮度，渐变过渡）。";
 "Drives brightness from the sun’s elevation at the location set below — dim near dawn/dusk, full once the sun is well up. A better lid-closed fallback than the flat schedule; the ambient light sensor still takes priority while it can be read, and Clock Mode’s explicit schedule always wins." = "根据下方所设位置的太阳高度角调节亮度 — 黎明/黄昏时偏暗，太阳升高后全亮。作为合盖时的后备方案比固定计划更好；能读取环境光传感器时仍以它为准，而“时钟模式”的明确计划始终优先。";
-"True Tone" = "原彩显示";
-"Follows the colour of the room’s light" = "跟随环境光的色温";
-"Set by True Tone" = "由原彩显示调节";
